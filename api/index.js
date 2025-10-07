@@ -1,13 +1,18 @@
 import express from 'express'
 import cors from 'cors'
-import dotenv from 'dotenv'
-
-dotenv.config({ path: '.env.local' })
 
 const app = express()
 const PORT = 1701
 
-app.use(cors())
+// Configure CORS for production and development
+const corsOptions = {
+  origin: process.env.NODE_ENV === 'production'
+    ? ['https://volunteer.riverchristian.church', 'https://volunteer.riverchristian.org']
+    : '*',
+  credentials: true
+}
+
+app.use(cors(corsOptions))
 app.use(express.json())
 
 // OAuth callback endpoint
@@ -349,10 +354,12 @@ app.post('/api/field/update', async (req, res) => {
   }
 })
 
-// For local development
-app.listen(PORT, () => {
-  console.log(`API server running on http://localhost:${PORT}`)
-})
+// For local development only (Vercel ignores this)
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`API server running on http://localhost:${PORT}`)
+  })
+}
 
 // Export for Vercel serverless functions
 export default app
