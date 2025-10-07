@@ -16,7 +16,7 @@ export function initiateLogin() {
 
 export async function exchangeCodeForToken(code: string): Promise<{ accessToken: string, userData: any }> {
   // Call our server-side API to exchange code (keeps client secret secure)
-  const response = await fetch(`http://localhost:1701/api/auth/callback?code=${code}`)
+  const response = await fetch(`/api/auth/callback?code=${code}`)
 
   if (!response.ok) {
     throw new Error('Failed to exchange code for token')
@@ -59,7 +59,7 @@ export async function refreshUserData() {
   try {
     // Fetch fresh user data from our API server
     // The server will include field data using admin PAT
-    const response = await fetch(`http://localhost:1701/api/user/refresh`, {
+    const response = await fetch(`/api/user/refresh`, {
       headers: {
         Authorization: `Bearer ${session.token}`,
       },

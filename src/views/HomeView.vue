@@ -221,7 +221,7 @@ async function handleMarkSubmitted(step: Step) {
     console.log('Submitting field update:', step.fieldName)
 
     // Call API to update the custom field
-    const response = await fetch('http://localhost:1701/api/field/update', {
+    const response = await fetch('/api/field/update', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
