@@ -19,6 +19,13 @@ app.get('/api/auth/callback', async (req, res) => {
   }
 
   try {
+    // Determine the correct redirect URI based on environment
+    const protocol = req.headers['x-forwarded-proto'] || 'http'
+    const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost:1700'
+    const redirectUri = `${protocol}://${host}/auth/callback`
+
+    console.log('Using redirect URI:', redirectUri)
+
     // Exchange code for token
     const tokenResponse = await fetch('https://api.planningcenteronline.com/oauth/token', {
       method: 'POST',
@@ -30,7 +37,7 @@ app.get('/api/auth/callback', async (req, res) => {
         code,
         client_id: process.env.VITE_PCO_OAUTH_CLIENT_ID,
         client_secret: process.env.VITE_PCO_OAUTH_SECRET,
-        redirect_uri: 'http://localhost:1700/auth/callback',
+        redirect_uri: redirectUri,
       }),
     })
 

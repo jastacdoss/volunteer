@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "run-p dev:*",
     "dev:vite": "vite",
-    "dev:api": "node server.js",
+    "dev:api": "node api/index.js",
     "build": "run-p type-check \"build-only {@}\" --",
     "preview": "vite preview",
     "build-only": "vite build",
