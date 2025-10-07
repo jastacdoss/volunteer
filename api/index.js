@@ -1,5 +1,12 @@
 import express from 'express'
 import cors from 'cors'
+import dotenv from 'dotenv'
+
+// Load environment variables for local development
+// Vercel will use dashboard environment variables
+if (process.env.NODE_ENV !== 'production') {
+  dotenv.config({ path: '.env.local' })
+}
 
 const app = express()
 const PORT = 1701
