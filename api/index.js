@@ -15,6 +15,22 @@ const corsOptions = {
 app.use(cors(corsOptions))
 app.use(express.json())
 
+// Debug endpoint to check environment
+app.get('/api/debug', (req, res) => {
+  res.json({
+    nodeEnv: process.env.NODE_ENV,
+    hasClientId: !!process.env.VITE_PCO_OAUTH_CLIENT_ID,
+    hasClientSecret: !!process.env.VITE_PCO_OAUTH_SECRET,
+    hasPcoAppId: !!process.env.PCO_APP_ID,
+    hasPcoSecret: !!process.env.PCO_SECRET,
+    headers: {
+      host: req.headers.host,
+      'x-forwarded-host': req.headers['x-forwarded-host'],
+      'x-forwarded-proto': req.headers['x-forwarded-proto']
+    }
+  })
+})
+
 // OAuth callback endpoint
 app.get('/api/auth/callback', async (req, res) => {
   const { code } = req.query
@@ -30,6 +46,8 @@ app.get('/api/auth/callback', async (req, res) => {
     const redirectUri = `${protocol}://${host}/auth/callback`
 
     console.log('Using redirect URI:', redirectUri)
+    console.log('Client ID:', process.env.VITE_PCO_OAUTH_CLIENT_ID ? 'SET' : 'NOT SET')
+    console.log('Client Secret:', process.env.VITE_PCO_OAUTH_SECRET ? 'SET' : 'NOT SET')
 
     // Exchange code for token
     const tokenResponse = await fetch('https://api.planningcenteronline.com/oauth/token', {
@@ -48,8 +66,19 @@ app.get('/api/auth/callback', async (req, res) => {
 
     if (!tokenResponse.ok) {
       const error = await tokenResponse.text()
-      console.error('Token exchange error:', error)
-      return res.status(500).json({ error: 'Failed to exchange code for token' })
+      console.error('Token exchange failed:', {
+        status: tokenResponse.status,
+        statusText: tokenResponse.statusText,
+        error,
+        redirectUri,
+        hasClientId: !!process.env.VITE_PCO_OAUTH_CLIENT_ID,
+        hasClientSecret: !!process.env.VITE_PCO_OAUTH_SECRET
+      })
+      return res.status(500).json({
+        error: 'Failed to exchange code for token',
+        details: error,
+        redirectUri
+      })
     }
 
     const tokenData = await tokenResponse.json()
