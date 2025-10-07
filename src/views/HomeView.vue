@@ -40,22 +40,31 @@ const steps = ref<Step[]>([
   },
   {
     id: 3,
+    title: 'Child Safety Training',
+    description: 'Expect an email from Message@protectingourkids.com for the kid\'s safety training. This should come to your email 1-2 days after completing the background check. The training consists of multiple online videos. At the end of all the videos is a quick quiz, 70% or higher is considered passing. You will have 2 weeks to complete this training before the link expires.',
+    email: 'Message@protectingourkids.com',
+    fieldName: 'Safety Training',
+    action: 'pending-only',
+    completed: false
+  },
+  {
+    id: 4,
+    title: 'References',
+    description: 'Submit your reference forms using the link below.',
+    link: 'https://riverchristianchurch.churchcenter.com/people/forms/982853',
+    linkText: 'Submit References Form',
+    action: 'external',
+    fieldName: 'References Submitted',
+    completed: false
+  },
+  {
+    id: 5,
     title: 'Covenant',
     description: 'Read and sign the Covenant form for Kids ministry. Once completed, email it to admin@riverchristian.church.',
     link: 'mailto:admin@riverchristian.church',
     linkText: 'Email Covenant to Admin',
     action: 'external',
     fieldName: 'Covenants',
-    completed: false
-  },
-  {
-    id: 4,
-    title: 'References',
-    description: 'Submit your reference forms using the link below. Our admin team will review and verify your references.',
-    link: 'https://riverchristianchurch.churchcenter.com/people/forms/982853',
-    linkText: 'Submit References Form',
-    action: 'external',
-    fieldName: 'References Checked',
     completed: false
   }
 ])
@@ -168,7 +177,17 @@ onMounted(async () => {
       }
     }
 
-    // Step 3: Covenants - multi-select field, check for "Kids"
+    // Step 3: Safety Training - boolean or date field
+    else if (step.fieldName === 'Safety Training') {
+      step.completed = fieldValue === 'true' || fieldValue === true || (fieldValue && fieldValue.length > 0)
+    }
+
+    // Step 4: References Submitted - boolean field
+    else if (step.fieldName === 'References Submitted') {
+      step.completed = fieldValue === 'true' || fieldValue === true
+    }
+
+    // Step 5: Covenants - multi-select field, check for "Kids"
     else if (step.fieldName === 'Covenants') {
       // Covenants is a multi-select, value might be a string or array
       if (typeof fieldValue === 'string') {
@@ -178,11 +197,6 @@ onMounted(async () => {
       } else {
         step.completed = false
       }
-    }
-
-    // Step 4: References Checked - boolean field
-    else if (step.fieldName === 'References Checked') {
-      step.completed = fieldValue === 'true' || fieldValue === true
     }
   })
 
