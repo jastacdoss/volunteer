@@ -51,3 +51,32 @@ export function logout() {
   clearSession()
   window.location.href = '/'
 }
+
+export async function refreshUserData() {
+  const session = getSession()
+  if (!session) return null
+
+  try {
+    // Fetch fresh user data from our API server
+    // The server will include field data using admin PAT
+    const response = await fetch(`http://localhost:1701/api/user/refresh`, {
+      headers: {
+        Authorization: `Bearer ${session.token}`,
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error('Failed to fetch user data')
+    }
+
+    const { userData } = await response.json()
+
+    // Update session storage with fresh data
+    sessionStorage.setItem('pco_user', JSON.stringify(userData))
+
+    return userData
+  } catch (error) {
+    console.error('Failed to refresh user data:', error)
+    return null
+  }
+}

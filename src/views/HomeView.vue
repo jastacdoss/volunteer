@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { getSession, initiateLogin, logout } from '@/lib/auth'
+import { getSession, initiateLogin, logout, refreshUserData } from '@/lib/auth'
 
 interface Step {
   id: number
@@ -9,8 +9,11 @@ interface Step {
   link?: string
   linkText?: string
   completed: boolean
+  pending?: boolean
   completedDate?: string
   email?: string
+  action?: 'submit' | 'external' | 'pending-only'
+  fieldName?: string
 }
 
 const steps = ref<Step[]>([
@@ -18,39 +21,50 @@ const steps = ref<Step[]>([
     id: 1,
     title: 'Declaration Form',
     description: 'This Declaration form must be completed and submitted before moving onto step 2.',
-    link: 'https://fs11.formsite.com/OF5Zls/zbtttxycs9/index',
+    link: 'https://riverchristianchurch.churchcenter.com/people/forms/818825',
     linkText: 'Complete Declaration Form',
+    action: 'external',
+    fieldName: 'Declaration',
     completed: false
   },
   {
     id: 2,
-    title: 'Background Check',
-    description: 'Follow this link to submit your personal background check information. (This procedure needs to be completed every 2 years.)',
+    title: 'Background Check Application',
+    description: 'Follow this link to submit your personal background check information. After submitting, click the button below to mark as submitted. (This procedure needs to be completed every 2 years.)',
     link: 'https://ministryopportunities.org/RCCFI',
-    linkText: 'Submit Background Check',
-    completed: false
+    linkText: 'Submit Background Check Application',
+    action: 'submit',
+    fieldName: 'Background Check Application Submitted',
+    completed: false,
+    pending: false
   },
   {
     id: 3,
     title: 'Child Safety Training',
     description: 'Expect an email from Message@protectingourkids.com for the kid\'s safety training. This should come to your email 1-2 days after completing the background check. The training consists of multiple online videos. At the end of all the videos is a quick quiz, 70% or higher is considered passing. You will have 2 weeks to complete this training before the link expires.',
     email: 'Message@protectingourkids.com',
+    fieldName: 'Safety Training',
+    action: 'pending-only',
     completed: false
   },
   {
     id: 4,
-    title: 'Covenant and Reference Forms',
-    description: 'Read and sign this Covenant and Reference form for this ministry. Once completed, email them to admin@riverchristian.church.',
-    link: 'mailto:admin@riverchristian.church',
-    linkText: 'Email Forms to Admin',
+    title: 'References',
+    description: 'Submit your reference forms using the link below.',
+    link: 'https://riverchristianchurch.churchcenter.com/people/forms/982853',
+    linkText: 'Submit References Form',
+    action: 'external',
+    fieldName: 'References Submitted',
     completed: false
   },
   {
     id: 5,
-    title: 'Welcome to RCC Class',
-    description: 'If you have not already attended the Welcome to RCC class, please register for the next class available.',
-    link: '#',
-    linkText: 'View Schedule',
+    title: 'Covenant',
+    description: 'Read and sign the Covenant form for Kids ministry. Once completed, email it to admin@riverchristian.church.',
+    link: 'mailto:admin@riverchristian.church',
+    linkText: 'Email Covenant to Admin',
+    action: 'external',
+    fieldName: 'Covenants',
     completed: false
   }
 ])
@@ -69,22 +83,121 @@ onMounted(async () => {
 
   isAuthenticated.value = true
 
+  // Refresh user data to get latest field information
+  const freshData = await refreshUserData()
+  const userData = freshData || session.user
+
   // Extract user name from PCO data
-  const personData = session.user.data
+  const personData = userData.data
   userName.value = personData.attributes.first_name || 'Volunteer'
 
-  // Extract custom fields from included field_data
-  const fieldData = session.user.included?.filter((item: any) => item.type === 'FieldDatum') || []
+  // Extract custom fields and field definitions from included data
+  const included = userData.included || []
 
-  // Map field data to completion status
-  // TODO: Update these field names to match your actual PCO custom fields
-  fieldData.forEach((field: any) => {
-    const fieldName = field.attributes.field_definition_id
-    const value = field.attributes.value
+  // Field data comes from relationships, not included
+  const fieldDataRelationship = userData.data.relationships?.field_data?.data || []
+  const fieldData = Array.isArray(fieldDataRelationship) ? fieldDataRelationship : []
 
-    // Example: Check if steps are completed based on custom field values
-    // You'll need to map these to your actual field definition IDs
-    // For now, leaving as TODO
+  // Field definitions come from included
+  const fieldDefinitions = included.filter((item: any) => item.type === 'FieldDefinition')
+
+  // Debug: Log all field definitions to see what's available
+  console.log('Available field definitions:', fieldDefinitions.map((def: any) => ({
+    id: def.id,
+    name: def.attributes.name,
+    tab: def.attributes.tab_name
+  })))
+
+  // Debug: Log all field data values
+  console.log('Field data values:', fieldData.map((data: any) => ({
+    field_definition_id: data.relationships?.field_definition?.data?.id,
+    value: data.attributes.value
+  })))
+
+  // Helper function to get field value by field name
+  const getFieldValue = (fieldName: string) => {
+    // Find the field definition by name
+    const fieldDef = fieldDefinitions.find((def: any) =>
+      def.attributes.name === fieldName
+    )
+
+    if (!fieldDef) {
+      console.log(`Field "${fieldName}" not found in definitions`)
+      return null
+    }
+
+    console.log(`Found field definition for "${fieldName}":`, fieldDef.id)
+
+    // Find the field data that matches this definition ID
+    const field = fieldData.find((data: any) =>
+      data.relationships?.field_definition?.data?.id === fieldDef.id
+    )
+
+    const value = field?.attributes?.value || null
+    console.log(`Field "${fieldName}" value:`, value)
+
+    return value
+  }
+
+  // Map field data to completion status for each step
+  steps.value.forEach((step, index) => {
+    if (!step.fieldName) return
+
+    const fieldValue = getFieldValue(step.fieldName)
+
+    // Default to not completed if field value is null/undefined
+    if (fieldValue === null || fieldValue === undefined) {
+      step.completed = false
+      step.pending = false
+      return
+    }
+
+    // Step 1: Declaration - boolean field
+    if (step.fieldName === 'Declaration') {
+      step.completed = fieldValue === 'true' || fieldValue === true
+    }
+
+    // Step 2: Background Check Application Submitted - boolean field
+    // Shows as "pending" (yellow) until background check is actually valid
+    else if (step.fieldName === 'Background Check Application Submitted') {
+      const isSubmitted = fieldValue === 'true' || fieldValue === true
+      if (isSubmitted) {
+        // Check if background check is actually valid (from person attributes)
+        const bgCheckValid = personData.attributes.passed_background_check === true
+        if (bgCheckValid) {
+          step.completed = true
+          step.pending = false
+        } else {
+          step.completed = false
+          step.pending = true // Yellow state
+        }
+      } else {
+        step.completed = false
+        step.pending = false
+      }
+    }
+
+    // Step 3: Safety Training - boolean or date field
+    else if (step.fieldName === 'Safety Training') {
+      step.completed = fieldValue === 'true' || fieldValue === true || (fieldValue && fieldValue.length > 0)
+    }
+
+    // Step 4: References Submitted - boolean field
+    else if (step.fieldName === 'References Submitted') {
+      step.completed = fieldValue === 'true' || fieldValue === true
+    }
+
+    // Step 5: Covenants - multi-select field, check for "Kids"
+    else if (step.fieldName === 'Covenants') {
+      // Covenants is a multi-select, value might be a string or array
+      if (typeof fieldValue === 'string') {
+        step.completed = fieldValue.includes('Kids')
+      } else if (Array.isArray(fieldValue)) {
+        step.completed = fieldValue.includes('Kids')
+      } else {
+        step.completed = false
+      }
+    }
   })
 
   isLoading.value = false
@@ -96,6 +209,48 @@ function handleLogin() {
 
 function handleLogout() {
   logout()
+}
+
+async function handleMarkSubmitted(step: Step) {
+  if (!step.fieldName) return
+
+  try {
+    const session = getSession()
+    if (!session) return
+
+    console.log('Submitting field update:', step.fieldName)
+
+    // Call API to update the custom field
+    const response = await fetch('http://localhost:1701/api/field/update', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({
+        fieldName: step.fieldName,
+        value: true,
+      }),
+    })
+
+    console.log('Response status:', response.status)
+
+    if (!response.ok) {
+      const errorData = await response.json()
+      console.error('Update failed:', errorData)
+      throw new Error(errorData.error || 'Failed to update field')
+    }
+
+    const result = await response.json()
+    console.log('Update successful:', result)
+
+    // Refresh user data to get updated field values
+    await refreshUserData()
+    location.reload() // Reload to show updated status
+  } catch (error) {
+    console.error('Failed to mark as submitted:', error)
+    alert('Failed to mark as submitted. Please try again.')
+  }
 }
 </script>
 
@@ -181,8 +336,9 @@ function handleLogout() {
         >
           <div class="p-6">
             <div class="flex items-start gap-4">
-              <!-- Step Number/Checkmark -->
+              <!-- Step Number/Checkmark/Pending -->
               <div class="flex-shrink-0">
+                <!-- Completed -->
                 <div
                   v-if="step.completed"
                   class="w-12 h-12 rounded-full bg-green-500 flex items-center justify-center"
@@ -191,6 +347,16 @@ function handleLogout() {
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path>
                   </svg>
                 </div>
+                <!-- Pending -->
+                <div
+                  v-else-if="step.pending"
+                  class="w-12 h-12 rounded-full bg-yellow-500 flex items-center justify-center"
+                >
+                  <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                  </svg>
+                </div>
+                <!-- Not started -->
                 <div
                   v-else
                   class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold text-lg shadow-md"
@@ -211,6 +377,12 @@ function handleLogout() {
                   >
                     Completed
                   </span>
+                  <span
+                    v-else-if="step.pending"
+                    class="px-3 py-1 bg-yellow-100 text-yellow-700 text-xs font-semibold rounded-full"
+                  >
+                    Pending Review
+                  </span>
                 </div>
 
                 <p class="text-gray-700 mb-4 leading-relaxed">
@@ -221,14 +393,17 @@ function handleLogout() {
                   Completed on {{ step.completedDate }}
                 </div>
 
-                <div v-if="step.email && !step.completed" class="mb-3">
+                <div v-if="step.email && !step.completed && !step.pending" class="mb-3">
                   <span class="text-sm text-gray-600">
                     Watch for email from: <span class="font-medium text-gray-900">{{ step.email }}</span>
                   </span>
                 </div>
 
-                <div v-if="step.link && !step.completed">
+                <!-- Buttons for incomplete steps -->
+                <div v-if="!step.completed && !step.pending" class="flex gap-3 flex-wrap">
+                  <!-- External link button -->
                   <a
+                    v-if="step.link"
                     :href="step.link"
                     target="_blank"
                     class="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-500 text-white font-semibold rounded-lg hover:from-blue-700 hover:to-blue-600 transition-all duration-200 shadow-md hover:shadow-lg"
@@ -238,6 +413,35 @@ function handleLogout() {
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
                     </svg>
                   </a>
+
+                  <!-- Mark as submitted button (only for Background Check) -->
+                  <button
+                    v-if="step.action === 'submit'"
+                    @click="handleMarkSubmitted(step)"
+                    class="inline-flex items-center gap-2 px-6 py-3 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-all duration-200 shadow-md hover:shadow-lg"
+                  >
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                    </svg>
+                    <span>Mark as Submitted</span>
+                  </button>
+
+                  <!-- Pending button (for Safety Training) -->
+                  <button
+                    v-if="step.action === 'pending-only'"
+                    disabled
+                    class="inline-flex items-center gap-2 px-6 py-3 bg-gray-400 text-white font-semibold rounded-lg cursor-not-allowed shadow-md"
+                  >
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    <span>Pending</span>
+                  </button>
+                </div>
+
+                <!-- Pending message -->
+                <div v-if="step.pending" class="text-sm text-yellow-700 bg-yellow-50 p-3 rounded-lg">
+                  Your submission is pending review. We'll update your status once it's been processed.
                 </div>
               </div>
             </div>
