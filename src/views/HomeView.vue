@@ -279,11 +279,11 @@ const additionalRequirements = computed((): AdditionalRequirement[] => {
     const teamNames = activeTeams.value.map(team => getTeamDisplayName(team))
     let teamText = ''
     if (teamNames.length === 1) {
-      teamText = teamNames[0]
+      teamText = teamNames[0]!
     } else if (teamNames.length === 2) {
-      teamText = `${teamNames[0]} and ${teamNames[1]}`
-    } else {
-      teamText = teamNames.slice(0, -1).join(', ') + ', and ' + teamNames[teamNames.length - 1]
+      teamText = `${teamNames[0]!} and ${teamNames[1]!}`
+    } else if (teamNames.length > 2) {
+      teamText = teamNames.slice(0, -1).join(', ') + ', and ' + teamNames[teamNames.length - 1]!
     }
 
     additional.push({
