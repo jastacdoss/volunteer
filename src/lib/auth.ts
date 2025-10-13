@@ -77,6 +77,9 @@ export async function refreshUserData() {
     return userData
   } catch (error) {
     console.error('Failed to refresh user data:', error)
+    // Clear invalid session and redirect to login
+    clearSession()
+    window.location.href = '/'
     return null
   }
 }

@@ -5,7 +5,12 @@ import dotenv from 'dotenv'
 // Load environment variables for local development
 // Vercel will use dashboard environment variables
 if (process.env.NODE_ENV !== 'production') {
-  dotenv.config({ path: '.env.local' })
+  const result = dotenv.config({ path: '.env.local' })
+  if (result.error) {
+    console.error('Error loading .env.local:', result.error)
+  } else {
+    console.log('.env.local loaded successfully')
+  }
 }
 
 const app = express()
@@ -48,8 +53,13 @@ app.get('/api/auth/callback', async (req, res) => {
 
   try {
     // Determine the correct redirect URI based on environment
+    // For local development, always use localhost:1700 (Vite dev server)
+    // For production, use the forwarded host from Vercel
+    const isLocal = !req.headers['x-forwarded-host']
     const protocol = req.headers['x-forwarded-proto'] || 'http'
-    const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost:1700'
+    const host = isLocal
+      ? 'localhost:1700'
+      : (req.headers['x-forwarded-host'] || req.headers.host)
     const redirectUri = `${protocol}://${host}/auth/callback`
 
     console.log('Using redirect URI:', redirectUri)
@@ -237,6 +247,10 @@ app.post('/api/field/update', async (req, res) => {
   }
 
   try {
+    console.log('=== FIELD UPDATE REQUEST ===')
+    console.log('Field name:', fieldName)
+    console.log('Value:', value)
+
     // Get user ID
     const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
       headers: {
@@ -250,6 +264,7 @@ app.post('/api/field/update', async (req, res) => {
 
     const userData = await userResponse.json()
     const personId = userData.data.id
+    console.log('Person ID:', personId)
 
     // Get ALL field definitions (not just the ones with data for this person)
     const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
@@ -312,7 +327,11 @@ app.post('/api/field/update', async (req, res) => {
 
     if (!fieldDef) {
       console.error(`Field "${fieldName}" not found in PCO`)
-      return res.status(404).json({ error: `Field "${fieldName}" not found. Please create this custom field in PCO People first.` })
+      console.error('Available fields:', allFieldDefs.map(f => f.attributes.name).join(', '))
+      return res.status(404).json({
+        error: `Field "${fieldName}" not found. Please create this custom field in PCO People first.`,
+        availableFields: allFieldDefs.map(f => f.attributes.name)
+      })
     }
 
     console.log(`Found field definition for "${fieldName}":`, fieldDef.id)
@@ -379,7 +398,11 @@ app.post('/api/field/update', async (req, res) => {
     if (!updateResponse.ok) {
       const errorText = await updateResponse.text()
       console.error('Failed to update field:', updateResponse.status, errorText)
-      return res.status(500).json({ error: 'Failed to update field' })
+      return res.status(500).json({
+        error: 'Failed to update field',
+        details: errorText,
+        status: updateResponse.status
+      })
     }
 
     console.log('Field updated successfully')
@@ -387,6 +410,159 @@ app.post('/api/field/update', async (req, res) => {
   } catch (error) {
     console.error('Field update error:', error)
     res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Check if user is a PCO admin
+app.get('/api/admin/check', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  try {
+    // Fetch user data with permissions
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    })
+
+    if (!userResponse.ok) {
+      return res.status(500).json({ error: 'Failed to fetch user data' })
+    }
+
+    const userData = await userResponse.json()
+
+    // Check if user has admin permissions
+    // PCO stores this in 'site_administrator' and 'people_permissions' attributes
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    console.log('=== ADMIN CHECK ===')
+    console.log('User ID:', userData.data.id)
+    console.log('Site Administrator:', isSiteAdmin)
+    console.log('People Permissions:', peoplePermissions)
+    console.log('Is Admin?', isAdmin)
+    console.log('==================')
+
+    res.json({ isAdmin })
+  } catch (error) {
+    console.error('Admin check error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Save team requirements (admin only)
+app.post('/api/admin/team-requirements', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+  const { teams } = req.body
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  if (!teams) {
+    return res.status(400).json({ error: 'Teams data is required' })
+  }
+
+  try {
+    // Verify user is admin
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    })
+
+    if (!userResponse.ok) {
+      return res.status(500).json({ error: 'Failed to fetch user data' })
+    }
+
+    const userData = await userResponse.json()
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    // Save to JSON config file
+    const fs = await import('fs/promises')
+    const path = await import('path')
+    const { fileURLToPath } = await import('url')
+
+    // Get the directory of the current file
+    const __filename = fileURLToPath(import.meta.url)
+    const __dirname = path.dirname(__filename)
+    const configPath = path.join(__dirname, '..', 'data', 'teamRequirements.json')
+
+    console.log('Saving to:', configPath)
+    console.log('Number of teams to save:', Object.keys(teams).length)
+
+    // Prepare the data to save
+    const configData = {
+      lastUpdated: new Date().toISOString(),
+      updatedBy: userData.data.attributes.name || userData.data.attributes.login_identifier,
+      teams
+    }
+
+    // Write to file
+    await fs.writeFile(configPath, JSON.stringify(configData, null, 2), 'utf8')
+
+    console.log('✅ Team requirements saved successfully by:', configData.updatedBy)
+    console.log('✅ File written to:', configPath)
+
+    res.json({
+      success: true,
+      message: 'Changes saved successfully',
+      lastUpdated: configData.lastUpdated,
+      updatedBy: configData.updatedBy
+    })
+  } catch (error) {
+    console.error('Team requirements save error:', error)
+    res.status(500).json({ error: 'Internal server error', details: error.message })
+  }
+})
+
+// Get team requirements (with overrides from config file)
+app.get('/api/admin/team-requirements', async (req, res) => {
+  try {
+    const fs = await import('fs/promises')
+    const path = await import('path')
+    const { fileURLToPath } = await import('url')
+
+    // Get the directory of the current file
+    const __filename = fileURLToPath(import.meta.url)
+    const __dirname = path.dirname(__filename)
+    const configPath = path.join(__dirname, '..', 'data', 'teamRequirements.json')
+
+    // Try to read the config file
+    let configData = { teams: {} }
+    try {
+      const fileContent = await fs.readFile(configPath, 'utf8')
+      configData = JSON.parse(fileContent)
+    } catch (error) {
+      console.log('No custom config found, using defaults')
+    }
+
+    // Import the default requirements from the module
+    // Since this is server-side, we need to read the TypeScript file or have a separate JSON defaults file
+    // For now, return the config data (which will be empty initially)
+    res.json({
+      teams: configData.teams || {},
+      lastUpdated: configData.lastUpdated,
+      updatedBy: configData.updatedBy
+    })
+  } catch (error) {
+    console.error('Failed to load team requirements:', error)
+    res.status(500).json({ error: 'Internal server error', details: error.message })
   }
 })
 

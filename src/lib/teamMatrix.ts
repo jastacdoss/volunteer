@@ -31,8 +31,9 @@ export interface RequiredSteps {
   leadership: boolean
 }
 
-// Team requirements matrix - lowercase team names with dashes instead of spaces
-export const TEAM_REQUIREMENTS: Record<string, TeamRequirements> = {
+// Default team requirements matrix - lowercase team names with dashes instead of spaces
+// These can be overridden by data/teamRequirements.json
+const DEFAULT_TEAM_REQUIREMENTS: Record<string, TeamRequirements> = {
   // Leadership
   'staff': {
     backgroundCheck: true,
@@ -526,6 +527,45 @@ export const TEAM_REQUIREMENTS: Record<string, TeamRequirements> = {
     leadership: false,
     publicPresence: true
   }
+}
+
+// Mutable requirements that can be updated from API
+let TEAM_REQUIREMENTS = { ...DEFAULT_TEAM_REQUIREMENTS }
+
+/**
+ * Load team requirements from the API and merge with defaults
+ * This allows admins to override default requirements
+ */
+export async function loadTeamRequirements(): Promise<void> {
+  try {
+    const response = await fetch('/api/admin/team-requirements')
+    if (!response.ok) {
+      console.warn('Failed to load team requirements from API, using defaults')
+      return
+    }
+
+    const data = await response.json()
+    const overrides = data.teams || {}
+
+    // Merge overrides with defaults
+    // Each team in overrides will completely replace the default
+    TEAM_REQUIREMENTS = {
+      ...DEFAULT_TEAM_REQUIREMENTS,
+      ...overrides
+    }
+
+    console.log('Team requirements loaded from API')
+  } catch (error) {
+    console.error('Error loading team requirements:', error)
+    // Continue with defaults if API fails
+  }
+}
+
+/**
+ * Get the current team requirements
+ */
+export function getTeamRequirements(): Record<string, TeamRequirements> {
+  return TEAM_REQUIREMENTS
 }
 
 /**

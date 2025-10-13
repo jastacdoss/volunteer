@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { getSession, initiateLogin, logout, refreshUserData } from '@/lib/auth'
-import { getRequiredSteps, getCovenantLevel, getTeamDisplayName, type RequiredSteps } from '@/lib/teamMatrix'
+import { loadTeamRequirements, getRequiredSteps, getCovenantLevel, getTeamDisplayName, type RequiredSteps } from '@/lib/teamMatrix'
 
 // Environment variables for training validity periods
 const CHILD_SAFETY_TRAINING_VALID_YEARS = Number(import.meta.env.VITE_CHILD_SAFETY_TRAINING_VALID_YEARS || 2)
@@ -28,11 +28,13 @@ interface AdditionalRequirement {
   link?: string
   linkText?: string
   fieldName?: string
+  completed?: boolean
 }
 
 const userName = ref('Volunteer')
 const isLoading = ref(true)
 const isAuthenticated = ref(false)
+const isUserAdmin = ref(false)
 const activeTeams = ref<string[]>([])
 const completedTeams = ref<string[]>([])
 const personData = ref<any>(null)
@@ -255,12 +257,16 @@ const additionalRequirements = computed((): AdditionalRequirement[] => {
   const additional: AdditionalRequirement[] = []
 
   if (required.welcomeToRCC) {
+    const welcomeDate = getFieldValue('Welcome to RCC Date')
+    const isCompleted = !!(welcomeDate && welcomeDate !== 'false' && welcomeDate !== false)
+
     additional.push({
       title: 'Attend Welcome to RCC',
       description: 'Completion of Welcome to RCC is required for your role.',
       link: 'https://riverchristianchurch.churchcenter.com/registrations/events/category/94241',
       linkText: 'View Schedule',
-      fieldName: 'Completion of Welcome to RCC'
+      fieldName: 'Welcome to RCC Date',
+      completed: isCompleted
     })
   }
 
@@ -286,10 +292,14 @@ const additionalRequirements = computed((): AdditionalRequirement[] => {
       teamText = teamNames.slice(0, -1).join(', ') + ', and ' + teamNames[teamNames.length - 1]!
     }
 
+    // Check PCO membership attribute
+    const isMember = personData.value.attributes.membership === 'Member'
+
     additional.push({
       title: 'RCC Membership',
       description: `Volunteers who serve on the ${teamText} ${teamNames.length === 1 ? 'Team are' : 'Teams are'} expected to be members of River Christian Church. You can ask questions and learn all about the process by attending Welcome to RCC.`,
-      fieldName: 'RCC Membership'
+      fieldName: 'RCC Membership',
+      completed: isMember
     })
   }
 
@@ -313,6 +323,9 @@ const additionalRequirements = computed((): AdditionalRequirement[] => {
 })
 
 onMounted(async () => {
+  // Load team requirements from API (with admin overrides)
+  await loadTeamRequirements()
+
   const session = getSession()
 
   if (!session) {
@@ -321,6 +334,21 @@ onMounted(async () => {
   }
 
   isAuthenticated.value = true
+
+  // Check if user is admin
+  try {
+    const adminResponse = await fetch('/api/admin/check', {
+      headers: {
+        'Authorization': `Bearer ${session.token}`,
+      },
+    })
+    if (adminResponse.ok) {
+      const adminData = await adminResponse.json()
+      isUserAdmin.value = adminData.isAdmin
+    }
+  } catch (error) {
+    console.log('Could not check admin status:', error)
+  }
 
   // Refresh user data to get latest field information
   const freshData = await refreshUserData()
@@ -441,12 +469,21 @@ async function handleMarkSubmitted(step: Step) {
             <h1 class="text-2xl font-bold text-gray-900">RCC Volunteer Onboarding</h1>
             <p class="text-sm text-gray-600 mt-1">River Christian Church</p>
           </div>
-          <button
-            @click="handleLogout"
-            class="text-sm text-gray-600 hover:text-gray-900 font-medium"
-          >
-            Sign Out
-          </button>
+          <div class="flex items-center gap-4">
+            <a
+              v-if="isUserAdmin"
+              href="/admin"
+              class="text-sm text-blue-600 hover:text-blue-700 font-semibold"
+            >
+              Admin
+            </a>
+            <button
+              @click="handleLogout"
+              class="text-sm text-gray-600 hover:text-gray-900 font-medium"
+            >
+              Sign Out
+            </button>
+          </div>
         </div>
       </div>
     </header>
@@ -631,7 +668,11 @@ async function handleMarkSubmitted(step: Step) {
               :key="index"
               class="flex items-start gap-4 p-4 bg-white rounded-lg shadow-sm"
             >
-              <svg class="w-6 h-6 text-purple-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <!-- Checkmark if completed, info icon if not -->
+              <svg v-if="req.completed" class="w-6 h-6 text-green-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+              </svg>
+              <svg v-else class="w-6 h-6 text-purple-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
               </svg>
               <div class="flex-1">
