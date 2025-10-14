@@ -566,6 +566,361 @@ app.get('/api/admin/team-requirements', async (req, res) => {
   }
 })
 
+// Check if user is a ministry leader
+app.get('/api/leader/check', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  try {
+    // Get current user
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    })
+
+    if (!userResponse.ok) {
+      return res.status(500).json({ error: 'Failed to fetch user data' })
+    }
+
+    const userData = await userResponse.json()
+    const personId = userData.data.id
+
+    // Get the user's field data to check Ministry/Team Leader field
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+    const fieldDataResponse = await fetch(
+      `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data?include=field_definition`,
+      {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      }
+    )
+
+    if (!fieldDataResponse.ok) {
+      return res.status(500).json({ error: 'Failed to fetch field data' })
+    }
+
+    const fieldDataResult = await fieldDataResponse.json()
+
+    // Find the Ministry/Team Leader field (ID: 961991)
+    const leaderFieldDef = fieldDataResult.included?.find(
+      item => item.type === 'FieldDefinition' && item.id === '961991'
+    )
+
+    if (!leaderFieldDef) {
+      return res.json({ isLeader: false })
+    }
+
+    const leaderFieldData = fieldDataResult.data?.find(
+      item => item.relationships?.field_definition?.data?.id === '961991'
+    )
+
+    const ministries = leaderFieldData?.attributes?.value || null
+
+    res.json({
+      isLeader: !!ministries,
+      ministries: ministries ? (Array.isArray(ministries) ? ministries : [ministries]) : []
+    })
+  } catch (error) {
+    console.error('Leader check error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Simple in-memory cache for volunteer data
+const volunteerCache = new Map()
+const CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
+
+// Get volunteers for a ministry (leader only)
+app.get('/api/leader/volunteers/:ministry', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+  const { ministry } = req.params
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  if (!ministry) {
+    return res.status(400).json({ error: 'Ministry parameter is required' })
+  }
+
+  // Check cache first
+  const cacheKey = `volunteers:${ministry}`
+  const cached = volunteerCache.get(cacheKey)
+  if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+    return res.json(cached.data)
+  }
+
+  try {
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+    // Fetch only field data for the two onboarding fields we care about
+    let allFieldData = []
+    const fieldIds = ['959379', '959386'] // In Progress (959379) and Completed (959386) fields
+
+    for (const fieldId of fieldIds) {
+      let nextUrl = `https://api.planningcenteronline.com/people/v2/field_data?where[field_definition_id]=${fieldId}&per_page=25`
+      let pageCount = 0
+      const maxPages = 2 // Very conservative to avoid rate limiting
+
+      while (nextUrl && pageCount < maxPages) {
+        const response = await fetch(nextUrl, {
+          headers: {
+            Authorization: `Basic ${credentials}`,
+          },
+        })
+
+        if (!response.ok) {
+          console.error(`Failed to fetch field data for field ${fieldId}:`, response.status)
+          if (response.status === 429) {
+            console.error('RATE LIMITED - PCO has blocked further requests temporarily')
+            break
+          }
+          break
+        }
+
+        const page = await response.json()
+        allFieldData = allFieldData.concat(page.data || [])
+
+        nextUrl = page.links?.next || null
+        pageCount++
+
+        // Longer delay to avoid rate limiting
+        if (nextUrl) {
+          await new Promise(resolve => setTimeout(resolve, 500))
+        }
+      }
+
+      // Delay between field fetches
+      if (fieldIds.indexOf(fieldId) < fieldIds.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+    }
+
+    // Group field data by person
+    const personFieldMap = new Map()
+    for (const fieldData of allFieldData) {
+      const personId = fieldData.relationships?.customizable?.data?.id
+      if (!personId) continue
+
+      if (!personFieldMap.has(personId)) {
+        personFieldMap.set(personId, [])
+      }
+      personFieldMap.get(personId).push(fieldData)
+    }
+
+    // Filter volunteers by onboarding status for this ministry
+    const inProgressVolunteers = []
+    const completedVolunteers = []
+
+    for (const [personId, personFieldData] of personFieldMap) {
+      // Check Onboarding In Progress For (959379) - SWAPPED: this was wrong!
+      const inProgressField = personFieldData.find(
+        fd => fd.relationships?.field_definition?.data?.id === '959379'
+      )
+      const inProgressValue = inProgressField?.attributes?.value
+
+      // Check Onboarding Completed For (959386) - SWAPPED: this was wrong!
+      const completedField = personFieldData.find(
+        fd => fd.relationships?.field_definition?.data?.id === '959386'
+      )
+      const completedValue = completedField?.attributes?.value
+
+      // Check if this person has the ministry in their onboarding fields
+      const inProgressMinistries = Array.isArray(inProgressValue) ? inProgressValue : (inProgressValue ? [inProgressValue] : [])
+      const completedMinistries = Array.isArray(completedValue) ? completedValue : (completedValue ? [completedValue] : [])
+
+      const matchesInProgress = inProgressMinistries.includes(ministry)
+      const matchesCompleted = completedMinistries.includes(ministry)
+
+      if (matchesInProgress || matchesCompleted) {
+        // Fetch person details
+        try {
+          const personResponse = await fetch(
+            `https://api.planningcenteronline.com/people/v2/people/${personId}`,
+            {
+              headers: {
+                Authorization: `Basic ${credentials}`,
+              },
+            }
+          )
+
+          if (personResponse.ok) {
+            const personData = await personResponse.json()
+            const person = personData.data
+
+            // Fetch email addresses
+            const emailsResponse = await fetch(
+              `https://api.planningcenteronline.com/people/v2/people/${personId}/emails`,
+              {
+                headers: {
+                  Authorization: `Basic ${credentials}`,
+                },
+              }
+            )
+
+            let primaryEmail = ''
+            if (emailsResponse.ok) {
+              const emailsData = await emailsResponse.json()
+              const emails = emailsData.data || []
+              // Find primary email or use first email
+              const primaryEmailObj = emails.find(e => e.attributes.primary) || emails[0]
+              primaryEmail = primaryEmailObj?.attributes?.address || ''
+            }
+
+            const volunteerInfo = {
+              id: person.id,
+              name: person.attributes.name,
+              email: primaryEmail,
+              avatar: person.attributes.avatar
+            }
+
+            // Prioritize completed over in progress - if they've completed for this ministry,
+            // they should only appear in the completed section
+            console.log(`📋 ${volunteerInfo.name}:`, {
+              inProgressMinistries,
+              completedMinistries,
+              matchesInProgress,
+              matchesCompleted
+            })
+
+            if (matchesCompleted) {
+              console.log(`✅ Adding ${volunteerInfo.name} to COMPLETED`)
+              completedVolunteers.push(volunteerInfo)
+            } else if (matchesInProgress) {
+              console.log(`🔄 Adding ${volunteerInfo.name} to IN PROGRESS`)
+              inProgressVolunteers.push(volunteerInfo)
+            }
+          }
+
+          // Small delay to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 100))
+        } catch (error) {
+          console.error(`Failed to fetch person ${personId}:`, error.message)
+        }
+      }
+    }
+
+    const result = {
+      inProgress: inProgressVolunteers,
+      completed: completedVolunteers
+    }
+
+    // Cache the result
+    volunteerCache.set(cacheKey, {
+      data: result,
+      timestamp: Date.now()
+    })
+
+    res.json(result)
+  } catch (error) {
+    console.error('Volunteers fetch error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Get specific volunteer's onboarding data (leader only)
+app.get('/api/leader/volunteer/:personId', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+  const { personId } = req.params
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  try {
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+    // Fetch person data
+    const personResponse = await fetch(
+      `https://api.planningcenteronline.com/people/v2/people/${personId}`,
+      {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      }
+    )
+
+    if (!personResponse.ok) {
+      return res.status(404).json({ error: 'Person not found' })
+    }
+
+    const personData = await personResponse.json()
+
+    // Fetch field data
+    const fieldDataResponse = await fetch(
+      `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data?include=field_definition`,
+      {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      }
+    )
+
+    if (!fieldDataResponse.ok) {
+      return res.status(500).json({ error: 'Failed to fetch field data' })
+    }
+
+    const fieldDataResult = await fieldDataResponse.json()
+
+    // Merge field data into person data (similar to /api/user/refresh)
+    personData.included = fieldDataResult.included || []
+    personData.data.relationships = personData.data.relationships || {}
+    personData.data.relationships.field_data = {
+      data: fieldDataResult.data || []
+    }
+
+    // Fetch email addresses
+    const emailsResponse = await fetch(
+      `https://api.planningcenteronline.com/people/v2/people/${personId}/emails`,
+      {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      }
+    )
+
+    let emails = []
+    if (emailsResponse.ok) {
+      const emailsData = await emailsResponse.json()
+      emails = emailsData.data || []
+    }
+
+    // Fetch phone numbers
+    const phonesResponse = await fetch(
+      `https://api.planningcenteronline.com/people/v2/people/${personId}/phone_numbers`,
+      {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      }
+    )
+
+    let phones = []
+    if (phonesResponse.ok) {
+      const phonesData = await phonesResponse.json()
+      phones = phonesData.data || []
+    }
+
+    res.json({
+      userData: personData,
+      emails,
+      phones
+    })
+  } catch (error) {
+    console.error('Volunteer data fetch error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // For local development only (Vercel ignores this)
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {

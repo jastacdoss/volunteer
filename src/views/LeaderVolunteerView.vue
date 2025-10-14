@@ -1,50 +1,99 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
-import { getSession, initiateLogin, logout, refreshUserData } from '@/lib/auth'
-import { loadTeamRequirements, getRequiredSteps, getCovenantLevel, getTeamDisplayName, type RequiredSteps } from '@/lib/teamMatrix'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import { getSession } from '@/lib/auth'
+import { loadTeamRequirements, getRequiredSteps, getTeamDisplayName, type RequiredSteps } from '@/lib/teamMatrix'
 
-// Environment variables for training validity periods
-const CHILD_SAFETY_TRAINING_VALID_YEARS = Number(import.meta.env.VITE_CHILD_SAFETY_TRAINING_VALID_YEARS || 2)
-const MANDATED_REPORTER_TRAINING_VALID_YEARS = Number(import.meta.env.VITE_MANDATED_REPORTER_TRAINING_VALID_YEARS || 1)
-
-interface Step {
-  id: number
-  title: string
-  description: string
-  link?: string
-  linkText?: string
-  completed: boolean
-  pending?: boolean
-  completedDate?: string
-  email?: string
-  action?: 'submit' | 'external' | 'pending-only'
-  fieldName?: string
-  covenantLevel?: 1 | 2 | 3
-}
-
-interface AdditionalRequirement {
-  title: string
-  description: string
-  link?: string
-  linkText?: string
-  fieldName?: string
-  completed?: boolean
-}
-
-const userName = ref('Volunteer')
+const router = useRouter()
+const route = useRoute()
 const isLoading = ref(true)
-const isAuthenticated = ref(false)
-const isUserAdmin = ref(false)
-const isUserLeader = ref(false)
-const activeTeams = ref<string[]>([])
-const completedTeams = ref<string[]>([])
 const personData = ref<any>(null)
 const fieldDefinitions = ref<any[]>([])
 const fieldData = ref<any[]>([])
+const emails = ref<any[]>([])
+const phones = ref<any[]>([])
+const volunteerName = ref('')
+const primaryEmail = ref('')
+const primaryPhone = ref('')
+const selectedTab = ref<string | null>(null)
 
-/**
- * Helper function to check if a date is within X years
- */
+const personId = route.params.id as string
+
+// Helper to get field value
+function getFieldValue(fieldName: string): any {
+  const fieldDef = fieldDefinitions.value.find((def: any) =>
+    def.attributes.name === fieldName
+  )
+
+  if (!fieldDef) return null
+
+  const field = fieldData.value.find((data: any) =>
+    data.relationships?.field_definition?.data?.id === fieldDef.id
+  )
+
+  return field?.attributes?.value || null
+}
+
+// Parse multi-select field value (same as HomeView)
+function parseMultiSelectValue(value: any): string[] {
+  if (!value) return []
+  if (Array.isArray(value)) return value
+  if (typeof value === 'string') {
+    // Handle comma-separated or newline-separated strings
+    return value.split(/[,\n]/).map(v => v.trim()).filter(v => v.length > 0)
+  }
+  return []
+}
+
+// Get active and completed teams (computed properties, not refs)
+const activeTeams = computed(() => {
+  const activeTeamsValue = getFieldValue('Onboarding In Progress For')
+  console.log('🔍 Active Teams Value:', activeTeamsValue, 'Field Data Count:', fieldData.value.length)
+  return parseMultiSelectValue(activeTeamsValue)
+})
+
+const completedTeams = computed(() => {
+  const completedTeamsValue = getFieldValue('Onboarding Completed For')
+  console.log('🔍 Completed Teams Value:', completedTeamsValue)
+
+  // Debug: Show all field names
+  if (fieldData.value.length > 0) {
+    const fieldNames = fieldData.value.map((fd: any) => {
+      const fieldDefId = fd.relationships?.field_definition?.data?.id
+      const fieldDef = personData.value?.included?.find((item: any) =>
+        item.type === 'FieldDefinition' && item.id === fieldDefId
+      )
+      return `${fieldDef?.attributes?.name} = ${fd.attributes?.value}`
+    })
+    console.log('📋 All fields:', fieldNames)
+  }
+
+  return parseMultiSelectValue(completedTeamsValue)
+})
+
+// All teams with their status (for tabs)
+const allTeams = computed(() => {
+  const teams: Array<{name: string, status: 'active' | 'completed'}> = []
+
+  activeTeams.value.forEach(team => {
+    teams.push({ name: team, status: 'active' })
+  })
+
+  completedTeams.value.forEach(team => {
+    teams.push({ name: team, status: 'completed' })
+  })
+
+  return teams
+})
+
+// Auto-select first team when data loads
+watch(allTeams, (teams) => {
+  if (teams.length > 0 && !selectedTab.value) {
+    selectedTab.value = teams[0].name
+  }
+}, { immediate: true })
+
+// Check if date is within X years
 function isWithinYears(dateString: string | null, years: number): boolean {
   if (!dateString) return false
   try {
@@ -57,55 +106,25 @@ function isWithinYears(dateString: string | null, years: number): boolean {
   }
 }
 
-/**
- * Helper function to get field value by field name
- */
-function getFieldValue(fieldName: string): any {
-  // Find the field definition by name
-  const fieldDef = fieldDefinitions.value.find((def: any) =>
-    def.attributes.name === fieldName
-  )
+// Get environment variables
+const CHILD_SAFETY_TRAINING_VALID_YEARS = 2
+const MANDATED_REPORTER_TRAINING_VALID_YEARS = 1
 
-  if (!fieldDef) {
-    return null
-  }
+// Calculate steps (same as HomeView)
+const steps = computed(() => {
+  // Show steps if there are either active OR completed teams
+  if (!personData.value || (activeTeams.value.length === 0 && completedTeams.value.length === 0)) return []
 
-  // Find the field data that matches this definition ID
-  const field = fieldData.value.find((data: any) =>
-    data.relationships?.field_definition?.data?.id === fieldDef.id
-  )
-
-  return field?.attributes?.value || null
-}
-
-/**
- * Parse multi-select field value (could be string or array)
- */
-function parseMultiSelectValue(value: any): string[] {
-  if (!value) return []
-  if (Array.isArray(value)) return value
-  if (typeof value === 'string') {
-    // Handle comma-separated or newline-separated strings
-    return value.split(/[,\n]/).map(v => v.trim()).filter(v => v.length > 0)
-  }
-  return []
-}
-
-/**
- * Dynamically generate steps based on team requirements
- */
-const steps = computed((): Step[] => {
-  if (!personData.value) return []
-
-  const active = activeTeams.value
-  const completed = completedTeams.value
-
-  if (active.length === 0) {
-    return []
-  }
+  // Filter by selected team
+  const active = selectedTab.value && activeTeams.value.includes(selectedTab.value)
+    ? [selectedTab.value]
+    : []
+  const completed = selectedTab.value && completedTeams.value.includes(selectedTab.value)
+    ? [selectedTab.value]
+    : []
 
   const required: RequiredSteps = getRequiredSteps(active, completed)
-  const stepsList: Step[] = []
+  const stepsList: any[] = []
 
   // Step 1: Declaration Form (only if Background Check required)
   if (required.backgroundCheck) {
@@ -248,14 +267,20 @@ const steps = computed((): Step[] => {
   return stepsList
 })
 
-/**
- * Additional requirements (not part of main onboarding steps)
- */
-const additionalRequirements = computed((): AdditionalRequirement[] => {
-  if (!personData.value || activeTeams.value.length === 0) return []
+// Additional requirements (same as HomeView)
+const additionalRequirements = computed(() => {
+  if (!personData.value || (activeTeams.value.length === 0 && completedTeams.value.length === 0)) return []
 
-  const required: RequiredSteps = getRequiredSteps(activeTeams.value, completedTeams.value)
-  const additional: AdditionalRequirement[] = []
+  // Filter by selected team (only show for active teams)
+  const active = selectedTab.value && activeTeams.value.includes(selectedTab.value)
+    ? [selectedTab.value]
+    : []
+  const completed = selectedTab.value && completedTeams.value.includes(selectedTab.value)
+    ? [selectedTab.value]
+    : []
+
+  const required: RequiredSteps = getRequiredSteps(active, completed)
+  const additional: any[] = []
 
   if (required.welcomeToRCC) {
     const welcomeDate = getFieldValue('Welcome to RCC Date')
@@ -282,23 +307,10 @@ const additionalRequirements = computed((): AdditionalRequirement[] => {
   }
 
   if (required.membership) {
-    // Format team names nicely for the description
-    const teamNames = activeTeams.value.map(team => getTeamDisplayName(team))
-    let teamText = ''
-    if (teamNames.length === 1) {
-      teamText = teamNames[0]!
-    } else if (teamNames.length === 2) {
-      teamText = `${teamNames[0]!} and ${teamNames[1]!}`
-    } else if (teamNames.length > 2) {
-      teamText = teamNames.slice(0, -1).join(', ') + ', and ' + teamNames[teamNames.length - 1]!
-    }
-
-    // Check PCO membership attribute
     const isMember = personData.value.attributes.membership === 'Member'
-
     additional.push({
       title: 'RCC Membership',
-      description: `Volunteers who serve on the ${teamText} ${teamNames.length === 1 ? 'Team are' : 'Teams are'} expected to be members of River Christian Church. You can ask questions and learn all about the process by attending Welcome to RCC.`,
+      description: 'Membership at River Christian Church is required for your role. You can ask questions and learn all about the process by attending Welcome to RCC.',
       fieldName: 'RCC Membership',
       completed: isMember
     })
@@ -323,249 +335,174 @@ const additionalRequirements = computed((): AdditionalRequirement[] => {
   return additional
 })
 
-onMounted(async () => {
-  // Load team requirements from API (with admin overrides)
-  await loadTeamRequirements()
-
+// Load volunteer data
+async function loadVolunteerData() {
   const session = getSession()
-
   if (!session) {
-    isLoading.value = false
+    router.push('/')
     return
   }
 
-  isAuthenticated.value = true
-
-  // Check if user is admin
   try {
-    const adminResponse = await fetch('/api/admin/check', {
+    await loadTeamRequirements()
+
+    const response = await fetch(`/api/leader/volunteer/${personId}`, {
       headers: {
         'Authorization': `Bearer ${session.token}`,
       },
     })
-    if (adminResponse.ok) {
-      const adminData = await adminResponse.json()
-      isUserAdmin.value = adminData.isAdmin
-    }
-  } catch (error) {
-    console.log('Could not check admin status:', error)
-  }
-
-  // Check if user is a leader
-  try {
-    const leaderResponse = await fetch('/api/leader/check', {
-      headers: {
-        'Authorization': `Bearer ${session.token}`,
-      },
-    })
-    if (leaderResponse.ok) {
-      const leaderData = await leaderResponse.json()
-      isUserLeader.value = leaderData.isLeader
-    }
-  } catch (error) {
-    console.log('Could not check leader status:', error)
-  }
-
-  // Refresh user data to get latest field information
-  const freshData = await refreshUserData()
-  const userData = freshData || session.user
-
-  // Extract user name from PCO data
-  personData.value = userData.data
-  userName.value = personData.value.attributes.first_name || 'Volunteer'
-
-  // Extract custom fields and field definitions from included data
-  const included = userData.included || []
-
-  // Field data comes from relationships, not included
-  const fieldDataRelationship = userData.data.relationships?.field_data?.data || []
-  fieldData.value = Array.isArray(fieldDataRelationship) ? fieldDataRelationship : []
-
-  // Field definitions come from included
-  fieldDefinitions.value = included.filter((item: any) => item.type === 'FieldDefinition')
-
-  console.log('Field definitions loaded:', fieldDefinitions.value.length)
-  console.log('All field names:', fieldDefinitions.value.map((f: any) => f.attributes.name))
-
-  // Get active teams (Onboarding In Progress For)
-  const activeTeamsValue = getFieldValue('Onboarding In Progress For')
-  activeTeams.value = parseMultiSelectValue(activeTeamsValue)
-
-  // Get completed teams (Onboarding Completed For)
-  const completedTeamsValue = getFieldValue('Onboarding Completed For')
-  completedTeams.value = parseMultiSelectValue(completedTeamsValue)
-
-  console.log('Active teams:', activeTeams.value)
-  console.log('Completed teams:', completedTeams.value)
-
-  // Debug covenant fields
-  console.log('Public Presence Policy Signed:', getFieldValue('Public Presence Policy Signed'))
-  console.log('Moral Conduct Policy Signed:', getFieldValue('Moral Conduct Policy Signed'))
-  console.log('Covenant Signed:', getFieldValue('Covenant Signed'))
-
-  isLoading.value = false
-})
-
-function handleLogin() {
-  initiateLogin()
-}
-
-function handleLogout() {
-  logout()
-}
-
-async function handleMarkSubmitted(step: Step) {
-  if (!step.fieldName) return
-
-  try {
-    const session = getSession()
-    if (!session) return
-
-    console.log('Submitting field update:', step.fieldName)
-
-    // Call API to update the custom field
-    const response = await fetch('/api/field/update', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.token}`,
-      },
-      body: JSON.stringify({
-        fieldName: step.fieldName,
-        value: true,  // Use boolean true instead of string "Yes"
-      }),
-    })
-
-    console.log('Response status:', response.status)
 
     if (!response.ok) {
-      const errorData = await response.json()
-      console.error('Update failed:', errorData)
-      if (errorData.availableFields) {
-        console.error('Available fields in PCO:', errorData.availableFields)
-      }
-      throw new Error(errorData.error || 'Failed to update field')
+      throw new Error('Failed to load volunteer data')
     }
 
-    const result = await response.json()
-    console.log('Update successful:', result)
+    const data = await response.json()
 
-    // Refresh user data to get updated field values
-    await refreshUserData()
-    location.reload() // Reload to show updated status
+    personData.value = data.userData.data
+    fieldDefinitions.value = data.userData.included?.filter((item: any) => item.type === 'FieldDefinition') || []
+
+    // The API endpoint returns FieldDatum objects directly in relationships.field_data.data
+    // (not references like in the normal PCO API)
+    fieldData.value = data.userData.data.relationships?.field_data?.data || []
+
+    emails.value = data.emails || []
+    phones.value = data.phones || []
+
+    console.log('✅ Loaded field data count:', fieldData.value.length)
+    console.log('📦 Field data:', fieldData.value)
+    console.log('📦 Field definitions:', fieldDefinitions.value)
+
+    volunteerName.value = personData.value.attributes.name
+    primaryEmail.value = emails.value.find((e: any) => e.attributes.primary)?.attributes.address ||
+                        emails.value[0]?.attributes.address ||
+                        'No email on file'
+    primaryPhone.value = phones.value.find((p: any) => p.attributes.primary)?.attributes.number ||
+                        phones.value[0]?.attributes.number ||
+                        'No phone on file'
+
   } catch (error) {
-    console.error('Failed to mark as submitted:', error)
-    alert('Failed to mark as submitted. Please try again.')
+    console.error('Failed to load volunteer data:', error)
+    router.push('/leader')
+  } finally {
+    isLoading.value = false
   }
 }
+
+const completedStepsCount = computed(() => {
+  return steps.value.filter(step => step.completed).length
+})
+
+const totalStepsCount = computed(() => {
+  return steps.value.length
+})
+
+const progressPercentage = computed(() => {
+  if (totalStepsCount.value === 0) return 0
+  return Math.round((completedStepsCount.value / totalStepsCount.value) * 100)
+})
+
+onMounted(async () => {
+  await loadVolunteerData()
+})
 </script>
 
 <template>
-  <!-- Not authenticated - show login -->
-  <div v-if="!isLoading && !isAuthenticated" class="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 flex items-center justify-center">
-    <div class="bg-white rounded-2xl shadow-lg p-12 max-w-md w-full text-center">
-      <h1 class="text-3xl font-bold text-gray-900 mb-4">RCC Volunteer Onboarding</h1>
-      <p class="text-gray-600 mb-8">Sign in with Planning Center to view your onboarding progress</p>
-      <button
-        @click="handleLogin"
-        class="w-full px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-500 text-white font-semibold rounded-lg hover:from-blue-700 hover:to-blue-600 transition-all duration-200 shadow-md hover:shadow-lg"
-      >
-        Sign in with Planning Center
-      </button>
-    </div>
-  </div>
-
-  <!-- Authenticated - show dashboard -->
-  <div v-else-if="!isLoading" class="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50">
+  <div class="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
     <!-- Header -->
     <header class="bg-white shadow-sm border-b border-gray-200">
-      <div class="max-w-5xl mx-auto px-6 py-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <h1 class="text-2xl font-bold text-gray-900">RCC Volunteer Onboarding</h1>
-            <p class="text-sm text-gray-600 mt-1">River Christian Church</p>
-          </div>
-          <div class="flex items-center gap-4">
-            <a
-              v-if="isUserLeader"
-              href="/leader"
-              class="text-sm text-blue-600 hover:text-blue-700 font-semibold"
-            >
-              Leader Dashboard
-            </a>
-            <a
-              v-if="isUserAdmin"
-              href="/admin"
-              class="text-sm text-blue-600 hover:text-blue-700 font-semibold"
-            >
-              Admin
-            </a>
-            <button
-              @click="handleLogout"
-              class="text-sm text-gray-600 hover:text-gray-900 font-medium"
-            >
-              Sign Out
-            </button>
-          </div>
+      <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+        <div class="flex items-center gap-4">
+          <button
+            @click="router.push('/leader')"
+            class="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+            </svg>
+          </button>
+          <h1 class="text-2xl font-bold text-gray-900">Volunteer Onboarding</h1>
         </div>
       </div>
     </header>
 
-    <!-- Main Content -->
-    <main class="max-w-5xl mx-auto px-6 py-12">
-      <!-- Welcome Section -->
-      <div class="bg-white rounded-2xl shadow-lg p-8 mb-8 border border-gray-100">
-        <h2 class="text-3xl font-bold text-gray-900 mb-4">
-          Hello, {{ userName }}!
-        </h2>
-        <div class="prose prose-lg max-w-none text-gray-700">
-          <p class="mb-4">
-            Thank you for taking the necessary steps to getting involved at RCC. Your time and service are so appreciated and because of volunteers like you, we are able to reach more for Christ.
-          </p>
-          <p class="mb-4">
-            Safety is our top priority, so every adult volunteer that may work around kids must complete a background check and the online child safety training prior to volunteering.
-          </p>
-        </div>
+    <!-- Loading State -->
+    <div v-if="isLoading" class="flex items-center justify-center min-h-[60vh]">
+      <div class="text-center">
+        <div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+        <p class="text-gray-600">Loading volunteer data...</p>
+      </div>
+    </div>
 
-        <!-- Show active teams -->
-        <div v-if="activeTeams.length > 0" class="mt-6 p-4 bg-blue-50 rounded-lg">
-          <h3 class="text-sm font-semibold text-blue-900 mb-2">Onboarding For:</h3>
-          <div class="flex flex-wrap gap-2">
-            <span
-              v-for="team in activeTeams"
-              :key="team"
-              class="px-3 py-1 bg-blue-100 text-blue-800 text-sm font-medium rounded-full"
-            >
-              {{ getTeamDisplayName(team) }}
-            </span>
+    <!-- Main Content -->
+    <div v-else class="max-w-5xl mx-auto px-6 py-12">
+      <!-- Volunteer Info Card -->
+      <div class="bg-white rounded-2xl shadow-lg p-8 mb-8 border border-gray-100">
+        <h2 class="text-2xl font-bold text-gray-900 mb-4">{{ volunteerName }}</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <p class="text-sm text-gray-500 mb-1">Email</p>
+            <p class="font-semibold text-gray-900">{{ primaryEmail }}</p>
+          </div>
+          <div>
+            <p class="text-sm text-gray-500 mb-1">Phone</p>
+            <p class="font-semibold text-gray-900">{{ primaryPhone }}</p>
           </div>
         </div>
-
-        <!-- No teams selected -->
-        <div v-else class="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-          <p class="text-yellow-800 font-medium">
-            No teams selected for onboarding. Please contact the church office to get started.
-          </p>
-        </div>
       </div>
+
+      <!-- No teams selected message -->
+      <div v-if="activeTeams.length === 0 && completedTeams.length === 0" class="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+        <p class="text-yellow-800 font-medium">
+          No teams selected for onboarding.
+        </p>
+      </div>
+
+      <!-- Tabbed Interface and Content Window -->
+      <div v-else>
+        <!-- Team Tabs -->
+        <div class="flex gap-2 mb-0 flex-wrap pl-2">
+          <button
+            v-for="team in allTeams"
+            :key="team.name"
+            @click="selectedTab = team.name"
+            :class="[
+              'px-4 py-3 font-medium rounded-t-lg transition-colors flex items-center gap-2 border-t border-x',
+              selectedTab === team.name
+                ? (team.status === 'active' ? 'bg-blue-500 text-white border-blue-500' : 'bg-green-500 text-white border-green-500')
+                : (team.status === 'active' ? 'bg-blue-100 text-blue-800 hover:bg-blue-200 border-gray-300' : 'bg-green-100 text-green-800 hover:bg-green-200 border-gray-300')
+            ]"
+          >
+            <!-- Icon based on status -->
+            <svg v-if="team.status === 'active'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <svg v-else class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+            {{ getTeamDisplayName(team.name) }}
+          </button>
+        </div>
+
+        <!-- Content Window -->
+        <div class="bg-white rounded-b-xl rounded-tr-xl shadow-lg border border-gray-200 p-8">
 
       <!-- Progress Overview (only if there are steps) -->
       <div v-if="steps.length > 0" class="mb-8">
         <div class="flex items-center justify-between mb-4">
-          <h3 class="text-xl font-bold text-gray-900">Your Progress</h3>
+          <h3 class="text-xl font-bold text-gray-900">Progress</h3>
           <span class="text-sm font-medium text-gray-600">
-            {{ steps.filter(s => s.completed).length }} of {{ steps.length }} completed
+            {{ completedStepsCount }} of {{ totalStepsCount }} completed
           </span>
         </div>
         <div class="w-full bg-gray-200 rounded-full h-3">
           <div
             class="bg-gradient-to-r from-blue-600 to-blue-500 h-3 rounded-full transition-all duration-500"
-            :style="{ width: `${(steps.filter(s => s.completed).length / steps.length) * 100}%` }"
+            :style="{ width: `${progressPercentage}%` }"
           ></div>
         </div>
       </div>
 
-      <!-- Steps -->
+      <!-- Steps Section (read-only version of HomeView) -->
       <div v-if="steps.length > 0" class="space-y-6 mb-12">
         <div
           v-for="step in steps"
@@ -639,37 +576,23 @@ async function handleMarkSubmitted(step: Step) {
                   </span>
                 </div>
 
-                <!-- Buttons for incomplete steps -->
-                <div v-if="!step.completed && !step.pending" class="flex gap-3 flex-wrap">
-                  <!-- External link button -->
-                  <a
-                    v-if="step.link"
-                    :href="step.link"
-                    target="_blank"
-                    class="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-500 text-white font-semibold rounded-lg hover:from-blue-700 hover:to-blue-600 transition-all duration-200 shadow-md hover:shadow-lg"
-                  >
-                    <span>{{ step.linkText }}</span>
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                    </svg>
-                  </a>
-
-                  <!-- Mark as submitted button -->
-                  <button
-                    v-if="step.action === 'submit'"
-                    @click="handleMarkSubmitted(step)"
-                    class="inline-flex items-center gap-2 px-6 py-3 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-all duration-200 shadow-md hover:shadow-lg"
-                  >
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-                    </svg>
-                    <span>Mark as Submitted</span>
-                  </button>
+                <!-- Read-only: Show links as text only (no buttons) -->
+                <div v-if="!step.completed && !step.pending && step.link" class="flex gap-3 flex-wrap">
+                  <div class="text-sm text-gray-600">
+                    <span class="font-medium">Link:</span>
+                    <a
+                      :href="step.link"
+                      target="_blank"
+                      class="text-blue-600 hover:text-blue-700 ml-1"
+                    >
+                      {{ step.linkText || step.link }}
+                    </a>
+                  </div>
                 </div>
 
                 <!-- Pending message -->
                 <div v-if="step.pending" class="text-sm text-yellow-700 bg-yellow-50 p-3 rounded-lg">
-                  Your submission is pending review. We'll update your status once it's been processed.
+                  Submission is pending review. Status will be updated once it's been processed.
                 </div>
               </div>
             </div>
@@ -677,12 +600,12 @@ async function handleMarkSubmitted(step: Step) {
         </div>
       </div>
 
-      <!-- Additional Requirements Section -->
+      <!-- Additional Requirements Section (read-only version of HomeView) -->
       <div v-if="additionalRequirements.length > 0" class="mb-12">
         <div class="bg-gradient-to-r from-purple-50 to-blue-50 rounded-2xl p-8 border border-purple-100">
           <h3 class="text-2xl font-bold text-gray-900 mb-3">Additional Requirements</h3>
           <p class="text-gray-600 mb-6">
-            Based on your selected team(s), you may also need to complete the following:
+            Based on the selected team(s), the volunteer may also need to complete the following:
           </p>
 
           <div class="space-y-4">
@@ -717,19 +640,8 @@ async function handleMarkSubmitted(step: Step) {
           </div>
         </div>
       </div>
-
-      <!-- Footer Contact -->
-      <div class="mt-12 bg-gradient-to-r from-blue-600 to-blue-500 rounded-2xl shadow-lg p-8 text-white">
-        <h3 class="text-2xl font-bold mb-4">Questions or Need Help?</h3>
-        <p class="mb-4 text-blue-50">
-          Thank you for your interest in serving at RCC! We look forward to serving and growing the Kingdom alongside you! If you have any questions about the process or issues with the onboarding process please reach out to our office admin staff at <a href="mailto:admin@riverchristian.church" class="text-white hover:text-blue-100 font-semibold underline">admin@riverchristian.church</a>.
-        </p>
-        <div class="space-y-2 text-blue-50">
-          <p class="font-semibold text-white">Sincerely,</p>
-          <p>Cathy Reigner & Heather Lynn</p>
-          <p>RCC Office Admin</p>
         </div>
       </div>
-    </main>
+    </div>
   </div>
 </template>
