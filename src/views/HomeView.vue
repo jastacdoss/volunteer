@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { getSession, initiateLogin, logout, refreshUserData } from '@/lib/auth'
 import { loadTeamRequirements, getRequiredSteps, getCovenantLevel, getTeamDisplayName, type RequiredSteps } from '@/lib/teamMatrix'
+import OnboardingSteps from '@/components/OnboardingSteps.vue'
+import AdditionalRequirements from '@/components/AdditionalRequirements.vue'
 
 // Environment variables for training validity periods
 const CHILD_SAFETY_TRAINING_VALID_YEARS = Number(import.meta.env.VITE_CHILD_SAFETY_TRAINING_VALID_YEARS || 2)
@@ -41,6 +43,7 @@ const completedTeams = ref<string[]>([])
 const personData = ref<any>(null)
 const fieldDefinitions = ref<any[]>([])
 const fieldData = ref<any[]>([])
+const selectedTab = ref<string | null>(null)
 
 /**
  * Helper function to check if a date is within X years
@@ -92,6 +95,30 @@ function parseMultiSelectValue(value: any): string[] {
 }
 
 /**
+ * All teams with their status (for tabs)
+ */
+const allTeams = computed(() => {
+  const teams: Array<{name: string, status: 'active' | 'completed'}> = []
+
+  activeTeams.value.forEach(team => {
+    teams.push({ name: team, status: 'active' })
+  })
+
+  completedTeams.value.forEach(team => {
+    teams.push({ name: team, status: 'completed' })
+  })
+
+  return teams
+})
+
+// Auto-select first team when data loads
+watch(allTeams, (teams) => {
+  if (teams.length > 0 && !selectedTab.value && teams[0]) {
+    selectedTab.value = teams[0].name
+  }
+}, { immediate: true })
+
+/**
  * Dynamically generate steps based on team requirements
  */
 const steps = computed((): Step[] => {
@@ -104,7 +131,26 @@ const steps = computed((): Step[] => {
     return []
   }
 
-  const required: RequiredSteps = getRequiredSteps(active, completed)
+  // If we have multiple teams, filter by selected tab
+  const showTabs = allTeams.value.length > 1
+  let teamsToShow = active
+
+  if (showTabs && selectedTab.value) {
+    // Show only the selected tab's requirements
+    const isActiveTab = active.includes(selectedTab.value)
+    const isCompletedTab = completed.includes(selectedTab.value)
+
+    if (isActiveTab) {
+      teamsToShow = [selectedTab.value]
+    } else if (isCompletedTab) {
+      // For completed tabs, still show requirements but use as active to get requirements
+      teamsToShow = [selectedTab.value]
+    } else {
+      teamsToShow = []
+    }
+  }
+
+  const required: RequiredSteps = getRequiredSteps(teamsToShow, [])
   const stepsList: Step[] = []
 
   // Step 1: Declaration Form (only if Background Check required)
@@ -254,7 +300,26 @@ const steps = computed((): Step[] => {
 const additionalRequirements = computed((): AdditionalRequirement[] => {
   if (!personData.value || activeTeams.value.length === 0) return []
 
-  const required: RequiredSteps = getRequiredSteps(activeTeams.value, completedTeams.value)
+  // If we have multiple teams, filter by selected tab
+  const showTabs = allTeams.value.length > 1
+  let teamsToShow = activeTeams.value
+
+  if (showTabs && selectedTab.value) {
+    // Show only the selected tab's requirements
+    const isActiveTab = activeTeams.value.includes(selectedTab.value)
+    const isCompletedTab = completedTeams.value.includes(selectedTab.value)
+
+    if (isActiveTab) {
+      teamsToShow = [selectedTab.value]
+    } else if (isCompletedTab) {
+      // For completed tabs, still show requirements
+      teamsToShow = [selectedTab.value]
+    } else {
+      teamsToShow = []
+    }
+  }
+
+  const required: RequiredSteps = getRequiredSteps(teamsToShow, [])
   const additional: AdditionalRequirement[] = []
 
   if (required.welcomeToRCC) {
@@ -527,8 +592,8 @@ async function handleMarkSubmitted(step: Step) {
           </p>
         </div>
 
-        <!-- Show active teams -->
-        <div v-if="activeTeams.length > 0" class="mt-6 p-4 bg-blue-50 rounded-lg">
+        <!-- Show active teams (when no tabs) -->
+        <div v-if="activeTeams.length > 0 && allTeams.length <= 1" class="mt-6 p-4 bg-blue-50 rounded-lg">
           <h3 class="text-sm font-semibold text-blue-900 mb-2">Onboarding For:</h3>
           <div class="flex flex-wrap gap-2">
             <span
@@ -542,179 +607,95 @@ async function handleMarkSubmitted(step: Step) {
         </div>
 
         <!-- No teams selected -->
-        <div v-else class="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+        <div v-else-if="activeTeams.length === 0 && completedTeams.length === 0" class="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
           <p class="text-yellow-800 font-medium">
             No teams selected for onboarding. Please contact the church office to get started.
           </p>
         </div>
       </div>
 
-      <!-- Progress Overview (only if there are steps) -->
-      <div v-if="steps.length > 0" class="mb-8">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-xl font-bold text-gray-900">Your Progress</h3>
-          <span class="text-sm font-medium text-gray-600">
-            {{ steps.filter(s => s.completed).length }} of {{ steps.length }} completed
-          </span>
+      <!-- Tabbed Interface (when multiple teams) -->
+      <div v-if="allTeams.length > 1">
+        <!-- Team Tabs -->
+        <div class="flex gap-2 mb-0 flex-wrap pl-2">
+          <button
+            v-for="team in allTeams"
+            :key="team.name"
+            @click="selectedTab = team.name"
+            :class="[
+              'px-4 py-3 font-medium rounded-t-lg transition-colors flex items-center gap-2 border-t border-x',
+              selectedTab === team.name
+                ? (team.status === 'active' ? 'bg-blue-500 text-white border-blue-500' : 'bg-green-500 text-white border-green-500')
+                : (team.status === 'active' ? 'bg-blue-100 text-blue-800 hover:bg-blue-200 border-gray-300' : 'bg-green-100 text-green-800 hover:bg-green-200 border-gray-300')
+            ]"
+          >
+            <!-- Icon based on status -->
+            <svg v-if="team.status === 'active'" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <svg v-else class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+            {{ getTeamDisplayName(team.name) }}
+          </button>
         </div>
-        <div class="w-full bg-gray-200 rounded-full h-3">
-          <div
-            class="bg-gradient-to-r from-blue-600 to-blue-500 h-3 rounded-full transition-all duration-500"
-            :style="{ width: `${(steps.filter(s => s.completed).length / steps.length) * 100}%` }"
-          ></div>
-        </div>
-      </div>
 
-      <!-- Steps -->
-      <div v-if="steps.length > 0" class="space-y-6 mb-12">
-        <div
-          v-for="step in steps"
-          :key="step.id"
-          class="bg-white rounded-xl shadow-md hover:shadow-lg transition-shadow duration-200 overflow-hidden border border-gray-200"
-        >
-          <div class="p-6">
-            <div class="flex items-start gap-4">
-              <!-- Step Number/Checkmark/Pending -->
-              <div class="flex-shrink-0">
-                <!-- Completed -->
-                <div
-                  v-if="step.completed"
-                  class="w-12 h-12 rounded-full bg-green-500 flex items-center justify-center"
-                >
-                  <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path>
-                  </svg>
-                </div>
-                <!-- Pending -->
-                <div
-                  v-else-if="step.pending"
-                  class="w-12 h-12 rounded-full bg-yellow-500 flex items-center justify-center"
-                >
-                  <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                  </svg>
-                </div>
-                <!-- Not started -->
-                <div
-                  v-else
-                  class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold text-lg shadow-md"
-                >
-                  {{ step.id }}
-                </div>
-              </div>
-
-              <!-- Content -->
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-3 mb-2">
-                  <h4 class="text-xl font-bold text-gray-900">
-                    Step {{ step.id }} - {{ step.title }}
-                  </h4>
-                  <span
-                    v-if="step.completed"
-                    class="px-3 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded-full"
-                  >
-                    Completed
-                  </span>
-                  <template v-else-if="step.pending">
-                    <span class="px-3 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded-full">
-                      Submitted
-                    </span>
-                    <span class="px-3 py-1 bg-orange-100 text-orange-700 text-xs font-semibold rounded-full">
-                      Pending Review
-                    </span>
-                  </template>
-                </div>
-
-                <p class="text-gray-700 mb-4 leading-relaxed">
-                  {{ step.description }}
-                </p>
-
-                <div v-if="step.completedDate" class="text-sm text-gray-500 mb-3">
-                  Completed on {{ step.completedDate }}
-                </div>
-
-                <div v-if="step.email && !step.completed && !step.pending" class="mb-3">
-                  <span class="text-sm text-gray-600">
-                    Watch for email from: <span class="font-medium text-gray-900">{{ step.email }}</span>
-                  </span>
-                </div>
-
-                <!-- Buttons for incomplete steps -->
-                <div v-if="!step.completed && !step.pending" class="flex gap-3 flex-wrap">
-                  <!-- External link button -->
-                  <a
-                    v-if="step.link"
-                    :href="step.link"
-                    target="_blank"
-                    class="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-500 text-white font-semibold rounded-lg hover:from-blue-700 hover:to-blue-600 transition-all duration-200 shadow-md hover:shadow-lg"
-                  >
-                    <span>{{ step.linkText }}</span>
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                    </svg>
-                  </a>
-
-                  <!-- Mark as submitted button -->
-                  <button
-                    v-if="step.action === 'submit'"
-                    @click="handleMarkSubmitted(step)"
-                    class="inline-flex items-center gap-2 px-6 py-3 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-all duration-200 shadow-md hover:shadow-lg"
-                  >
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-                    </svg>
-                    <span>Mark as Submitted</span>
-                  </button>
-                </div>
-
-                <!-- Pending message -->
-                <div v-if="step.pending" class="text-sm text-yellow-700 bg-yellow-50 p-3 rounded-lg">
-                  Your submission is pending review. We'll update your status once it's been processed.
-                </div>
-              </div>
+        <!-- Content Window -->
+        <div class="bg-white rounded-b-xl rounded-tr-xl shadow-lg border border-gray-200 p-8">
+          <!-- Progress Overview (only if there are steps) -->
+          <div v-if="steps.length > 0" class="mb-8">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="text-xl font-bold text-gray-900">Your Progress</h3>
+              <span class="text-sm font-medium text-gray-600">
+                {{ steps.filter(s => s.completed).length }} of {{ steps.length }} completed
+              </span>
             </div>
+            <div class="w-full bg-gray-200 rounded-full h-3">
+              <div
+                class="bg-gradient-to-r from-blue-600 to-blue-500 h-3 rounded-full transition-all duration-500"
+                :style="{ width: `${(steps.filter(s => s.completed).length / steps.length) * 100}%` }"
+              ></div>
+            </div>
+          </div>
+
+          <!-- Steps (using OnboardingSteps component) -->
+          <div v-if="steps.length > 0" class="mb-12">
+            <OnboardingSteps :steps="steps" :readonly="false" @mark-submitted="handleMarkSubmitted" />
+          </div>
+
+          <!-- Additional Requirements (using AdditionalRequirements component) -->
+          <div v-if="additionalRequirements.length > 0" class="mb-12">
+            <AdditionalRequirements :requirements="additionalRequirements" />
           </div>
         </div>
       </div>
 
-      <!-- Additional Requirements Section -->
-      <div v-if="additionalRequirements.length > 0" class="mb-12">
-        <div class="bg-gradient-to-r from-purple-50 to-blue-50 rounded-2xl p-8 border border-purple-100">
-          <h3 class="text-2xl font-bold text-gray-900 mb-3">Additional Requirements</h3>
-          <p class="text-gray-600 mb-6">
-            Based on your selected team(s), you may also need to complete the following:
-          </p>
-
-          <div class="space-y-4">
+      <!-- No Tabs - Show content directly -->
+      <div v-else-if="activeTeams.length > 0">
+        <!-- Progress Overview (only if there are steps) -->
+        <div v-if="steps.length > 0" class="mb-8">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-xl font-bold text-gray-900">Your Progress</h3>
+            <span class="text-sm font-medium text-gray-600">
+              {{ steps.filter(s => s.completed).length }} of {{ steps.length }} completed
+            </span>
+          </div>
+          <div class="w-full bg-gray-200 rounded-full h-3">
             <div
-              v-for="(req, index) in additionalRequirements"
-              :key="index"
-              class="flex items-start gap-4 p-4 bg-white rounded-lg shadow-sm"
-            >
-              <!-- Checkmark if completed, info icon if not -->
-              <svg v-if="req.completed" class="w-6 h-6 text-green-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-              </svg>
-              <svg v-else class="w-6 h-6 text-purple-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-              </svg>
-              <div class="flex-1">
-                <h4 class="font-bold text-gray-900 mb-1">{{ req.title }}</h4>
-                <p class="text-sm text-gray-600 mb-2">{{ req.description }}</p>
-                <a
-                  v-if="req.link"
-                  :href="req.link"
-                  target="_blank"
-                  class="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700 font-medium"
-                >
-                  <span>{{ req.linkText }}</span>
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-                  </svg>
-                </a>
-              </div>
-            </div>
+              class="bg-gradient-to-r from-blue-600 to-blue-500 h-3 rounded-full transition-all duration-500"
+              :style="{ width: `${(steps.filter(s => s.completed).length / steps.length) * 100}%` }"
+            ></div>
           </div>
+        </div>
+
+        <!-- Steps (using OnboardingSteps component) -->
+        <div v-if="steps.length > 0" class="mb-12">
+          <OnboardingSteps :steps="steps" :readonly="false" @mark-submitted="handleMarkSubmitted" />
+        </div>
+
+        <!-- Additional Requirements (using AdditionalRequirements component) -->
+        <div v-if="additionalRequirements.length > 0" class="mb-12">
+          <AdditionalRequirements :requirements="additionalRequirements" />
         </div>
       </div>
 

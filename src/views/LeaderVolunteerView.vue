@@ -3,6 +3,8 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getSession } from '@/lib/auth'
 import { loadTeamRequirements, getRequiredSteps, getTeamDisplayName, type RequiredSteps } from '@/lib/teamMatrix'
+import OnboardingSteps from '@/components/OnboardingSteps.vue'
+import AdditionalRequirements from '@/components/AdditionalRequirements.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -88,7 +90,7 @@ const allTeams = computed(() => {
 
 // Auto-select first team when data loads
 watch(allTeams, (teams) => {
-  if (teams.length > 0 && !selectedTab.value) {
+  if (teams.length > 0 && !selectedTab.value && teams[0]) {
     selectedTab.value = teams[0].name
   }
 }, { immediate: true })
@@ -121,12 +123,12 @@ const steps = computed(() => {
   const isActiveTab = selectedTab.value && activeTeams.value.includes(selectedTab.value)
   const isCompletedTab = selectedTab.value && completedTeams.value.includes(selectedTab.value)
 
-  const active = isActiveTab ? [selectedTab.value] : []
-  const completed = isCompletedTab ? [selectedTab.value] : []
+  const active = isActiveTab && selectedTab.value ? [selectedTab.value] : []
+  const completed = isCompletedTab && selectedTab.value ? [selectedTab.value] : []
 
   // For completed tabs, we still need to get the requirements to show what was needed
   // So we pass the completed team as if it were active
-  const teamsForRequirements = (isActiveTab || isCompletedTab) ? [selectedTab.value] : []
+  const teamsForRequirements = ((isActiveTab || isCompletedTab) && selectedTab.value) ? [selectedTab.value] : []
 
   const required: RequiredSteps = getRequiredSteps(teamsForRequirements, [])
   const stepsList: any[] = []
@@ -281,7 +283,7 @@ const additionalRequirements = computed(() => {
   const isCompletedTab = selectedTab.value && completedTeams.value.includes(selectedTab.value)
 
   // Pass selected tab as "active" to get its requirements
-  const teamsForRequirements = (isActiveTab || isCompletedTab) ? [selectedTab.value] : []
+  const teamsForRequirements = ((isActiveTab || isCompletedTab) && selectedTab.value) ? [selectedTab.value] : []
 
   const required: RequiredSteps = getRequiredSteps(teamsForRequirements, [])
   const additional: any[] = []
@@ -506,143 +508,14 @@ onMounted(async () => {
         </div>
       </div>
 
-      <!-- Steps Section (read-only version of HomeView) -->
-      <div v-if="steps.length > 0" class="space-y-6 mb-12">
-        <div
-          v-for="step in steps"
-          :key="step.id"
-          class="bg-white rounded-xl shadow-md hover:shadow-lg transition-shadow duration-200 overflow-hidden border border-gray-200"
-        >
-          <div class="p-6">
-            <div class="flex items-start gap-4">
-              <!-- Step Number/Checkmark/Pending -->
-              <div class="flex-shrink-0">
-                <!-- Completed -->
-                <div
-                  v-if="step.completed"
-                  class="w-12 h-12 rounded-full bg-green-500 flex items-center justify-center"
-                >
-                  <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path>
-                  </svg>
-                </div>
-                <!-- Pending -->
-                <div
-                  v-else-if="step.pending"
-                  class="w-12 h-12 rounded-full bg-yellow-500 flex items-center justify-center"
-                >
-                  <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                  </svg>
-                </div>
-                <!-- Not started -->
-                <div
-                  v-else
-                  class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold text-lg shadow-md"
-                >
-                  {{ step.id }}
-                </div>
-              </div>
-
-              <!-- Content -->
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-3 mb-2">
-                  <h4 class="text-xl font-bold text-gray-900">
-                    Step {{ step.id }} - {{ step.title }}
-                  </h4>
-                  <span
-                    v-if="step.completed"
-                    class="px-3 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded-full"
-                  >
-                    Completed
-                  </span>
-                  <template v-else-if="step.pending">
-                    <span class="px-3 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded-full">
-                      Submitted
-                    </span>
-                    <span class="px-3 py-1 bg-orange-100 text-orange-700 text-xs font-semibold rounded-full">
-                      Pending Review
-                    </span>
-                  </template>
-                </div>
-
-                <p class="text-gray-700 mb-4 leading-relaxed">
-                  {{ step.description }}
-                </p>
-
-                <div v-if="step.completedDate" class="text-sm text-gray-500 mb-3">
-                  Completed on {{ step.completedDate }}
-                </div>
-
-                <div v-if="step.email && !step.completed && !step.pending" class="mb-3">
-                  <span class="text-sm text-gray-600">
-                    Watch for email from: <span class="font-medium text-gray-900">{{ step.email }}</span>
-                  </span>
-                </div>
-
-                <!-- Read-only: Show links as text only (no buttons) -->
-                <div v-if="!step.completed && !step.pending && step.link" class="flex gap-3 flex-wrap">
-                  <div class="text-sm text-gray-600">
-                    <span class="font-medium">Link:</span>
-                    <a
-                      :href="step.link"
-                      target="_blank"
-                      class="text-blue-600 hover:text-blue-700 ml-1"
-                    >
-                      {{ step.linkText || step.link }}
-                    </a>
-                  </div>
-                </div>
-
-                <!-- Pending message -->
-                <div v-if="step.pending" class="text-sm text-yellow-700 bg-yellow-50 p-3 rounded-lg">
-                  Submission is pending review. Status will be updated once it's been processed.
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+      <!-- Steps Section (using OnboardingSteps component) -->
+      <div v-if="steps.length > 0" class="mb-12">
+        <OnboardingSteps :steps="steps" :readonly="true" />
       </div>
 
-      <!-- Additional Requirements Section (read-only version of HomeView) -->
+      <!-- Additional Requirements Section (using AdditionalRequirements component) -->
       <div v-if="additionalRequirements.length > 0" class="mb-12">
-        <div class="bg-gradient-to-r from-purple-50 to-blue-50 rounded-2xl p-8 border border-purple-100">
-          <h3 class="text-2xl font-bold text-gray-900 mb-3">Additional Requirements</h3>
-          <p class="text-gray-600 mb-6">
-            Based on the selected team(s), the volunteer may also need to complete the following:
-          </p>
-
-          <div class="space-y-4">
-            <div
-              v-for="(req, index) in additionalRequirements"
-              :key="index"
-              class="flex items-start gap-4 p-4 bg-white rounded-lg shadow-sm"
-            >
-              <!-- Checkmark if completed, info icon if not -->
-              <svg v-if="req.completed" class="w-6 h-6 text-green-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-              </svg>
-              <svg v-else class="w-6 h-6 text-purple-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-              </svg>
-              <div class="flex-1">
-                <h4 class="font-bold text-gray-900 mb-1">{{ req.title }}</h4>
-                <p class="text-sm text-gray-600 mb-2">{{ req.description }}</p>
-                <a
-                  v-if="req.link"
-                  :href="req.link"
-                  target="_blank"
-                  class="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700 font-medium"
-                >
-                  <span>{{ req.linkText }}</span>
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-                  </svg>
-                </a>
-              </div>
-            </div>
-          </div>
-        </div>
+        <AdditionalRequirements :requirements="additionalRequirements" />
       </div>
         </div>
       </div>
