@@ -116,14 +116,19 @@ const steps = computed(() => {
   if (!personData.value || (activeTeams.value.length === 0 && completedTeams.value.length === 0)) return []
 
   // Filter by selected team
-  const active = selectedTab.value && activeTeams.value.includes(selectedTab.value)
-    ? [selectedTab.value]
-    : []
-  const completed = selectedTab.value && completedTeams.value.includes(selectedTab.value)
-    ? [selectedTab.value]
-    : []
+  // For leader view, we need to show requirements for both active AND completed teams
+  // So we treat the selected tab as "active" to get its requirements
+  const isActiveTab = selectedTab.value && activeTeams.value.includes(selectedTab.value)
+  const isCompletedTab = selectedTab.value && completedTeams.value.includes(selectedTab.value)
 
-  const required: RequiredSteps = getRequiredSteps(active, completed)
+  const active = isActiveTab ? [selectedTab.value] : []
+  const completed = isCompletedTab ? [selectedTab.value] : []
+
+  // For completed tabs, we still need to get the requirements to show what was needed
+  // So we pass the completed team as if it were active
+  const teamsForRequirements = (isActiveTab || isCompletedTab) ? [selectedTab.value] : []
+
+  const required: RequiredSteps = getRequiredSteps(teamsForRequirements, [])
   const stepsList: any[] = []
 
   // Step 1: Declaration Form (only if Background Check required)
@@ -271,15 +276,14 @@ const steps = computed(() => {
 const additionalRequirements = computed(() => {
   if (!personData.value || (activeTeams.value.length === 0 && completedTeams.value.length === 0)) return []
 
-  // Filter by selected team (only show for active teams)
-  const active = selectedTab.value && activeTeams.value.includes(selectedTab.value)
-    ? [selectedTab.value]
-    : []
-  const completed = selectedTab.value && completedTeams.value.includes(selectedTab.value)
-    ? [selectedTab.value]
-    : []
+  // For leader view, show requirements for both active AND completed teams
+  const isActiveTab = selectedTab.value && activeTeams.value.includes(selectedTab.value)
+  const isCompletedTab = selectedTab.value && completedTeams.value.includes(selectedTab.value)
 
-  const required: RequiredSteps = getRequiredSteps(active, completed)
+  // Pass selected tab as "active" to get its requirements
+  const teamsForRequirements = (isActiveTab || isCompletedTab) ? [selectedTab.value] : []
+
+  const required: RequiredSteps = getRequiredSteps(teamsForRequirements, [])
   const additional: any[] = []
 
   if (required.welcomeToRCC) {
