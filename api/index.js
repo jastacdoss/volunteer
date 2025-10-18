@@ -706,26 +706,10 @@ app.get('/api/webhook/team-matrix', async (req, res) => {
     const __filename = fileURLToPath(import.meta.url)
     const __dirname = path.dirname(__filename)
 
-    // Read the TypeScript file containing DEFAULT_TEAM_REQUIREMENTS
-    const matrixPath = path.join(__dirname, '..', 'src', 'lib', 'teamMatrix.ts')
-    const matrixContent = await fs.readFile(matrixPath, 'utf8')
-
-    // Extract DEFAULT_TEAM_REQUIREMENTS object from the TypeScript file
-    // This is a simple regex-based extraction - assumes the object is well-formatted
-    const defaultMatrixMatch = matrixContent.match(/const DEFAULT_TEAM_REQUIREMENTS[^=]*=\s*(\{[\s\S]*?\n\})\s*\n/m)
-
-    if (!defaultMatrixMatch) {
-      return res.status(500).json({ error: 'Failed to parse team matrix file' })
-    }
-
-    // Convert the object literal string to JSON
-    // This is a bit hacky but works for our simple case
-    // We need to convert single quotes to double quotes and handle trailing commas
-    let matrixString = defaultMatrixMatch[1]
-
-    // Use eval to parse the object literal safely in this controlled environment
-    // Note: We control the source file, so this is safe here
-    const DEFAULT_TEAM_REQUIREMENTS = eval(`(${matrixString})`)
+    // Read the default team requirements from static JSON file
+    const defaultMatrixPath = path.join(__dirname, '..', 'data', 'defaultTeamRequirements.json')
+    const defaultMatrixContent = await fs.readFile(defaultMatrixPath, 'utf8')
+    const DEFAULT_TEAM_REQUIREMENTS = JSON.parse(defaultMatrixContent)
 
     // Also load any custom overrides from the config file
     const configPath = path.join(__dirname, '..', 'data', 'teamRequirements.json')
