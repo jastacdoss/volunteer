@@ -1,7 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
 import CallbackView from '../views/CallbackView.vue'
-import AdminView from '../views/AdminView.vue'
+import AdminVolunteersView from '../views/AdminVolunteersView.vue'
+import AdminMatrixView from '../views/AdminMatrixView.vue'
 import LeaderView from '../views/LeaderView.vue'
 import LeaderVolunteerView from '../views/LeaderVolunteerView.vue'
 
@@ -21,7 +22,12 @@ const router = createRouter({
     {
       path: '/admin',
       name: 'admin',
-      component: AdminView,
+      component: AdminVolunteersView,
+    },
+    {
+      path: '/admin/matrix',
+      name: 'admin-matrix',
+      component: AdminMatrixView,
     },
     {
       path: '/leader',

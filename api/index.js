@@ -1169,6 +1169,478 @@ app.get('/api/leader/volunteer/:personId', async (req, res) => {
   }
 })
 
+// Get all volunteers with "Onboarding In Progress For" (admin only)
+app.get('/api/admin/volunteers', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  try {
+    // Verify user is admin
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    })
+
+    if (!userResponse.ok) {
+      return res.status(500).json({ error: 'Failed to fetch user data' })
+    }
+
+    const userData = await userResponse.json()
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+    // Fetch all field data for "Onboarding In Progress For" field (959379)
+    let allFieldData = []
+    let nextUrl = `https://api.planningcenteronline.com/people/v2/field_data?where[field_definition_id]=959379&per_page=100`
+
+    while (nextUrl) {
+      const response = await fetch(nextUrl, {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      })
+
+      if (!response.ok) break
+
+      const page = await response.json()
+      allFieldData = allFieldData.concat(page.data || [])
+      nextUrl = page.links?.next || null
+    }
+
+    // Get all unique person IDs
+    const personIds = [...new Set(allFieldData.map(fd => fd.relationships?.customizable?.data?.id).filter(Boolean))]
+
+    // Fetch each person's data
+    const volunteers = []
+    for (const personId of personIds) {
+      try {
+        // Fetch person basic info
+        const personResponse = await fetch(
+          `https://api.planningcenteronline.com/people/v2/people/${personId}`,
+          {
+            headers: {
+              Authorization: `Basic ${credentials}`,
+            },
+          }
+        )
+
+        if (!personResponse.ok) continue
+
+        const personData = await personResponse.json()
+
+        // Fetch person's field data
+        const fieldDataResponse = await fetch(
+          `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data?include=field_definition`,
+          {
+            headers: {
+              Authorization: `Basic ${credentials}`,
+            },
+          }
+        )
+
+        if (!fieldDataResponse.ok) continue
+
+        const fieldDataResult = await fieldDataResponse.json()
+
+        // Get field values
+        const getFieldValue = (fieldName) => {
+          const fieldDef = fieldDataResult.included?.find(
+            item => item.type === 'FieldDefinition' && item.attributes.name === fieldName
+          )
+          if (!fieldDef) return null
+
+          const field = fieldDataResult.data?.find(
+            item => item.relationships?.field_definition?.data?.id === fieldDef.id
+          )
+          return field?.attributes?.value || null
+        }
+
+        // Get teams for this person
+        const teamsValue = getFieldValue('Onboarding In Progress For')
+        const teams = Array.isArray(teamsValue) ? teamsValue : (teamsValue ? [teamsValue] : [])
+
+        if (teams.length === 0) continue
+
+        // Get review statuses
+        const childSafetyReviewed = getFieldValue('Child Safety Training Reviewed') === 'Yes' || getFieldValue('Child Safety Training Reviewed') === true
+        const mandatedReporterReviewed = getFieldValue('Mandated Reporter Training Reviewed') === 'Yes' || getFieldValue('Mandated Reporter Training Reviewed') === true
+        const referencesChecked = getFieldValue('References Checked') === 'Yes' || getFieldValue('References Checked') === true
+
+        // Check if background check was ordered
+        const bgResponse = await fetch(
+          `https://api.planningcenteronline.com/people/v2/people/${personId}/background_checks`,
+          {
+            headers: {
+              Authorization: `Basic ${credentials}`,
+            },
+          }
+        )
+
+        let backgroundCheckOrdered = false
+        if (bgResponse.ok) {
+          const bgData = await bgResponse.json()
+          backgroundCheckOrdered = bgData.data && bgData.data.length > 0
+        }
+
+        // Calculate progress (6 main onboarding steps)
+        const steps = [
+          getFieldValue('Declaration Reviewed'),
+          backgroundCheckOrdered,
+          getFieldValue('Child Safety Training Last Completed'),
+          getFieldValue('Mandated Reporter Training Last Completed'),
+          getFieldValue('References Checked'),
+          getFieldValue('Public Presence Policy Signed') || getFieldValue('Moral Conduct Policy Signed') || getFieldValue('Covenant Signed')
+        ]
+        const completed = steps.filter(Boolean).length
+
+        volunteers.push({
+          id: personId,
+          name: personData.data.attributes.name,
+          email: '',
+          avatar: personData.data.attributes.avatar,
+          teams,
+          childSafetyReviewed,
+          mandatedReporterReviewed,
+          referencesChecked,
+          backgroundCheckOrdered,
+          progress: {
+            completed,
+            total: 6
+          }
+        })
+
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 50))
+      } catch (error) {
+        console.error(`Failed to fetch volunteer ${personId}:`, error.message)
+      }
+    }
+
+    res.json({ volunteers })
+  } catch (error) {
+    console.error('Admin volunteers fetch error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Toggle review status (admin only)
+app.post('/api/admin/toggle-review', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+  const { personId, fieldName, value } = req.body
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  try {
+    // Verify user is admin
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    })
+
+    if (!userResponse.ok) {
+      return res.status(500).json({ error: 'Failed to fetch user data' })
+    }
+
+    const userData = await userResponse.json()
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+    // Get field definition
+    let fieldDef = null
+    let nextUrl = `https://api.planningcenteronline.com/people/v2/field_definitions?per_page=100`
+
+    while (nextUrl) {
+      const response = await fetch(nextUrl, {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      })
+
+      if (!response.ok) break
+
+      const page = await response.json()
+      fieldDef = page.data?.find(item => item.attributes.name === fieldName)
+      if (fieldDef) break
+
+      nextUrl = page.links?.next || null
+    }
+
+    if (!fieldDef) {
+      return res.status(404).json({ error: `Field "${fieldName}" not found` })
+    }
+
+    // Get existing field data
+    const fieldDataResponse = await fetch(
+      `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data`,
+      {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      }
+    )
+
+    if (!fieldDataResponse.ok) {
+      return res.status(500).json({ error: 'Failed to fetch field data' })
+    }
+
+    const fieldDataResult = await fieldDataResponse.json()
+    const existingField = fieldDataResult.data?.find(
+      item => item.relationships?.field_definition?.data?.id === fieldDef.id
+    )
+
+    let updateResponse
+    if (existingField) {
+      // Update existing
+      updateResponse = await fetch(
+        `https://api.planningcenteronline.com/people/v2/field_data/${existingField.id}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Basic ${credentials}`,
+          },
+          body: JSON.stringify({
+            data: {
+              type: 'FieldDatum',
+              id: existingField.id,
+              attributes: {
+                value: value ? 'Yes' : 'No',
+              },
+            },
+          }),
+        }
+      )
+    } else {
+      // Create new
+      updateResponse = await fetch(
+        `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Basic ${credentials}`,
+          },
+          body: JSON.stringify({
+            data: {
+              type: 'FieldDatum',
+              attributes: {
+                value: value ? 'Yes' : 'No',
+              },
+              relationships: {
+                field_definition: {
+                  data: {
+                    type: 'FieldDefinition',
+                    id: fieldDef.id,
+                  },
+                },
+              },
+            },
+          }),
+        }
+      )
+    }
+
+    if (!updateResponse.ok) {
+      const errorText = await updateResponse.text()
+      return res.status(500).json({ error: 'Failed to update field', details: errorText })
+    }
+
+    res.json({ success: true })
+  } catch (error) {
+    console.error('Toggle review error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Mark volunteer onboarding as complete for a team (admin only)
+app.post('/api/admin/complete-onboarding', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+  const { personId, team } = req.body
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  try {
+    // Verify user is admin
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    })
+
+    if (!userResponse.ok) {
+      return res.status(500).json({ error: 'Failed to fetch user data' })
+    }
+
+    const userData = await userResponse.json()
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+    // Get field data for this person
+    const fieldDataResponse = await fetch(
+      `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data?include=field_definition`,
+      {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      }
+    )
+
+    if (!fieldDataResponse.ok) {
+      return res.status(500).json({ error: 'Failed to fetch field data' })
+    }
+
+    const fieldDataResult = await fieldDataResponse.json()
+
+    // Get field definitions
+    const inProgressDef = fieldDataResult.included?.find(
+      item => item.type === 'FieldDefinition' && item.attributes.name === 'Onboarding In Progress For'
+    )
+    const completedDef = fieldDataResult.included?.find(
+      item => item.type === 'FieldDefinition' && item.attributes.name === 'Onboarding Completed For'
+    )
+
+    if (!inProgressDef || !completedDef) {
+      return res.status(500).json({ error: 'Required fields not found' })
+    }
+
+    // Get current values
+    const inProgressField = fieldDataResult.data?.find(
+      item => item.relationships?.field_definition?.data?.id === inProgressDef.id
+    )
+    const completedField = fieldDataResult.data?.find(
+      item => item.relationships?.field_definition?.data?.id === completedDef.id
+    )
+
+    const inProgressValue = inProgressField?.attributes?.value
+    const completedValue = completedField?.attributes?.value
+
+    const inProgressTeams = Array.isArray(inProgressValue) ? inProgressValue : (inProgressValue ? [inProgressValue] : [])
+    const completedTeams = Array.isArray(completedValue) ? completedValue : (completedValue ? [completedValue] : [])
+
+    // Remove from in progress
+    const newInProgress = inProgressTeams.filter(t => t !== team)
+
+    // Add to completed if not already there
+    if (!completedTeams.includes(team)) {
+      completedTeams.push(team)
+    }
+
+    // Update both fields
+    if (inProgressField) {
+      await fetch(
+        `https://api.planningcenteronline.com/people/v2/field_data/${inProgressField.id}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Basic ${credentials}`,
+          },
+          body: JSON.stringify({
+            data: {
+              type: 'FieldDatum',
+              id: inProgressField.id,
+              attributes: {
+                value: newInProgress.length > 0 ? newInProgress : null,
+              },
+            },
+          }),
+        }
+      )
+    }
+
+    if (completedField) {
+      await fetch(
+        `https://api.planningcenteronline.com/people/v2/field_data/${completedField.id}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Basic ${credentials}`,
+          },
+          body: JSON.stringify({
+            data: {
+              type: 'FieldDatum',
+              id: completedField.id,
+              attributes: {
+                value: completedTeams,
+              },
+            },
+          }),
+        }
+      )
+    } else {
+      // Create new completed field
+      await fetch(
+        `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Basic ${credentials}`,
+          },
+          body: JSON.stringify({
+            data: {
+              type: 'FieldDatum',
+              attributes: {
+                value: completedTeams,
+              },
+              relationships: {
+                field_definition: {
+                  data: {
+                    type: 'FieldDefinition',
+                    id: completedDef.id,
+                  },
+                },
+              },
+            },
+          }),
+        }
+      )
+    }
+
+    res.json({ success: true })
+  } catch (error) {
+    console.error('Complete onboarding error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // For local development only (Vercel ignores this)
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
