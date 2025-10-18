@@ -29,8 +29,8 @@ async function checkLeaderStatus() {
   }
 
   // Store leader info from session
-  leaderName.value = session.userData?.data?.attributes?.name || 'Leader'
-  leaderEmail.value = session.userData?.data?.attributes?.login_identifier || ''
+  leaderName.value = session.user?.data?.attributes?.name || 'Leader'
+  leaderEmail.value = session.user?.data?.attributes?.login_identifier || ''
 
   try {
     const response = await fetch('/api/leader/check', {
@@ -53,9 +53,9 @@ async function checkLeaderStatus() {
     }
 
     // Auto-select first ministry
-    if (ministries.value.length > 0) {
+    if (ministries.value.length > 0 && ministries.value[0]) {
       selectedMinistry.value = ministries.value[0]
-      await loadVolunteers(selectedMinistry.value)
+      await loadVolunteers(ministries.value[0])
     }
   } catch (error) {
     console.error('Failed to check leader status:', error)
