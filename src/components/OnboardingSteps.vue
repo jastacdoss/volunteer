@@ -14,6 +14,8 @@ interface Step {
   action?: 'submit' | 'external' | 'pending-only'
   fieldName?: string
   covenantLevel?: 1 | 2 | 3
+  backgroundCheckStatus?: string
+  backgroundCheckDate?: string
 }
 
 const props = defineProps<{
@@ -90,12 +92,28 @@ function handleMarkSubmitted(step: Step) {
               </template>
             </div>
 
-            <p class="text-gray-700 mb-4 leading-relaxed">
-              {{ step.description }}
-            </p>
+            <p class="text-gray-700 mb-4 leading-relaxed" v-html="step.description"></p>
 
             <div v-if="step.completedDate" class="text-sm text-gray-500 mb-3">
               Completed on {{ step.completedDate }}
+            </div>
+
+            <!-- Background check status display -->
+            <div v-if="step.backgroundCheckStatus && step.backgroundCheckDate" class="mb-3">
+              <div class="inline-flex items-center gap-2 px-3 py-1 rounded-lg text-sm"
+                   :class="{
+                     'bg-green-50 text-green-700': step.backgroundCheckStatus === 'manual_clear',
+                     'bg-yellow-50 text-yellow-700': step.backgroundCheckStatus === 'report_processing',
+                     'bg-red-50 text-red-700': step.backgroundCheckStatus === 'manual_not_clear'
+                   }">
+                <span class="font-medium">
+                  Status: {{ step.backgroundCheckStatus === 'manual_clear' ? 'Cleared' :
+                           step.backgroundCheckStatus === 'report_processing' ? 'Processing' :
+                           step.backgroundCheckStatus === 'manual_not_clear' ? 'Not Cleared' :
+                           step.backgroundCheckStatus }}
+                </span>
+                <span class="text-xs">• {{ step.backgroundCheckDate }}</span>
+              </div>
             </div>
 
             <div v-if="step.email && !step.completed && !step.pending" class="mb-3">

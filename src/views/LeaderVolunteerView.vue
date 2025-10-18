@@ -18,6 +18,7 @@ const volunteerName = ref('')
 const primaryEmail = ref('')
 const primaryPhone = ref('')
 const selectedTab = ref<string | null>(null)
+const backgroundChecks = ref<any[]>([])
 
 const personId = route.params.id as string
 
@@ -95,6 +96,46 @@ watch(allTeams, (teams) => {
   }
 }, { immediate: true })
 
+// Helper function to get current background check
+function getCurrentBackgroundCheck() {
+  if (backgroundChecks.value.length === 0) return null
+
+  // First, try to find a check marked as current
+  const currentCheck = backgroundChecks.value.find((check: any) => check.attributes.current === true)
+  if (currentCheck) return currentCheck
+
+  // Otherwise, return the most recent one (sorted by completed_at desc)
+  const sorted = [...backgroundChecks.value].sort((a: any, b: any) => {
+    const dateA = new Date(a.attributes.completed_at || 0).getTime()
+    const dateB = new Date(b.attributes.completed_at || 0).getTime()
+    return dateB - dateA
+  })
+  return sorted[0] || null
+}
+
+// Helper to check expiration
+function isBackgroundCheckExpired(check: any): boolean {
+  if (!check || !check.attributes.expires_on) return false
+  try {
+    const expiresDate = new Date(check.attributes.expires_on)
+    const today = new Date()
+    return expiresDate < today
+  } catch {
+    return false
+  }
+}
+
+// Helper to format dates
+function formatDate(dateString: string | null): string {
+  if (!dateString) return ''
+  try {
+    const date = new Date(dateString)
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  } catch {
+    return ''
+  }
+}
+
 // Check if date is within X years
 function isWithinYears(dateString: string | null, years: number): boolean {
   if (!dateString) return false
@@ -144,7 +185,7 @@ const steps = computed(() => {
       id: stepsList.length + 1,
       title: 'Declaration Form',
       description: 'This Declaration form must be completed and submitted before moving onto the background check step.',
-      link: 'https://riverchristianchurch.churchcenter.com/people/forms/818825',
+      link: 'https://riverchristianchurch.churchcenter.com/people/forms/937413',
       linkText: 'Complete Declaration Form',
       action: 'external',
       fieldName: 'Declaration Submitted',
@@ -153,23 +194,79 @@ const steps = computed(() => {
     })
   }
 
-  // Step 2: Background Check Application (only if required)
+  // Step 2: Background Check (only if required) - Using BackgroundCheck API
   if (required.backgroundCheck) {
-    const bgSubmitted = getFieldValue('Background Check Application Submitted')
-    const bgPassed = personData.value.attributes.passed_background_check === true
-    const isSubmitted = bgSubmitted === 'Yes' || bgSubmitted === 'true' || bgSubmitted === true
+    const currentCheck = getCurrentBackgroundCheck()
 
-    stepsList.push({
+    let bgCompleted = false
+    let bgPending = false
+    let bgStatus = ''
+    let bgDate = ''
+    let description = ''
+    let action: 'submit' | 'external' | 'pending-only' = 'external'
+
+    if (!currentCheck) {
+      // No background check exists - show initial message
+      description = 'Expect an email to complete your background check. This should come to your email 1-2 days after your declaration is reviewed. (This procedure needs to be completed every 2 years.)'
+      action = 'pending-only'
+    } else {
+      const status = currentCheck.attributes.status
+      const statusUpdatedAt = currentCheck.attributes.status_updated_at
+      bgDate = formatDate(statusUpdatedAt)
+
+      // Check for various status values
+      if (status === 'report_processing' || status === 'pending') {
+        // Submitted, waiting for results
+        bgPending = true
+        bgStatus = 'report_processing'
+        description = `Background check submitted and processing. Status will update automatically when complete.`
+        action = 'pending-only'
+      } else if (status === 'manual_clear' || status === 'clear' || status === 'approved') {
+        // Background check passed
+        const isExpired = isBackgroundCheckExpired(currentCheck)
+        if (isExpired) {
+          // Expired - need new one
+          description = 'Your background check has expired. Please complete a new one.'
+          action = 'external'
+        } else {
+          // Valid and current
+          bgCompleted = true
+          bgStatus = 'manual_clear'
+          description = `Background check completed and approved.`
+          action = 'pending-only'
+        }
+      } else if (status === 'manual_not_clear' || status === 'not_clear' || status === 'denied') {
+        // Background check did not pass
+        bgStatus = 'manual_not_clear'
+        description = `Background check not cleared. Please contact the office for more information.`
+        action = 'pending-only'
+      } else {
+        // Unknown status - treat as pending
+        bgPending = true
+        bgStatus = status
+        description = `Background check status: ${status}`
+        action = 'pending-only'
+      }
+    }
+
+    const bgStep: any = {
       id: stepsList.length + 1,
-      title: 'Background Check Application',
-      description: 'Follow this link to submit your personal background check information. After submitting, click the button below to mark as submitted. (This procedure needs to be completed every 2 years.)',
-      link: 'https://ministryopportunities.org/RCCFI',
-      linkText: 'Submit Background Check Application',
-      action: 'submit',
-      fieldName: 'Background Check Application Submitted',
-      completed: bgPassed,
-      pending: isSubmitted && !bgPassed
-    })
+      title: 'Background Check',
+      description,
+      action,
+      completed: bgCompleted,
+      pending: bgPending,
+      backgroundCheckStatus: bgStatus,
+      backgroundCheckDate: bgDate
+    }
+
+    // Only add link if action is not 'pending-only' (i.e., when expired or no check exists but declaration completed)
+    if (action === 'external') {
+      bgStep.link = 'https://ministryopportunities.org/RCCFI'
+      bgStep.linkText = 'Submit Background Check'
+    }
+
+    stepsList.push(bgStep)
   }
 
   // Step 3: Child Safety Training (only if required)
@@ -385,6 +482,21 @@ async function loadVolunteerData() {
     primaryPhone.value = phones.value.find((p: any) => p.attributes.primary)?.attributes.number ||
                         phones.value[0]?.attributes.number ||
                         'No phone on file'
+
+    // Fetch background checks
+    try {
+      const bgResponse = await fetch(`/api/leader/volunteer/${personId}/background-checks`, {
+        headers: {
+          'Authorization': `Bearer ${session.token}`,
+        },
+      })
+      if (bgResponse.ok) {
+        const bgData = await bgResponse.json()
+        backgroundChecks.value = bgData.data || []
+      }
+    } catch (error) {
+      console.log('Could not fetch background checks:', error)
+    }
 
   } catch (error) {
     console.error('Failed to load volunteer data:', error)
