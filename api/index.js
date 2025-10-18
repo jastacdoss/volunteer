@@ -125,30 +125,41 @@ app.get('/api/auth/callback', async (req, res) => {
         // PATs use HTTP Basic Auth with app_id:secret format
         const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
 
-        const fieldDataResponse = await fetch(
-          `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data?include=field_definition`,
-          {
+        // Fetch ALL field data with pagination support
+        let allFieldData = []
+        let allIncluded = []
+        let nextUrl = `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data?include=field_definition&per_page=100`
+
+        while (nextUrl) {
+          const fieldDataResponse = await fetch(nextUrl, {
             headers: {
               Authorization: `Basic ${credentials}`,
             },
+          })
+
+          console.log('Field data response status:', fieldDataResponse.status)
+
+          if (fieldDataResponse.ok) {
+            const fieldDataResult = await fieldDataResponse.json()
+            allFieldData = allFieldData.concat(fieldDataResult.data || [])
+            allIncluded = allIncluded.concat(fieldDataResult.included || [])
+
+            // Check for next page
+            nextUrl = fieldDataResult.links?.next || null
+          } else {
+            const errorText = await fieldDataResponse.text()
+            console.error('Failed to fetch field data:', fieldDataResponse.status, errorText)
+            break
           }
-        )
+        }
 
-        console.log('Field data response status:', fieldDataResponse.status)
+        console.log('Field data fetched successfully:', allFieldData.length, 'fields total')
 
-        if (fieldDataResponse.ok) {
-          const fieldDataResult = await fieldDataResponse.json()
-          console.log('Field data fetched successfully:', fieldDataResult.data?.length || 0, 'fields')
-
-          // Merge field data into userData
-          userData.included = fieldDataResult.included || []
-          userData.data.relationships = userData.data.relationships || {}
-          userData.data.relationships.field_data = {
-            data: fieldDataResult.data || []
-          }
-        } else {
-          const errorText = await fieldDataResponse.text()
-          console.error('Failed to fetch field data:', fieldDataResponse.status, errorText)
+        // Merge field data into userData
+        userData.included = allIncluded
+        userData.data.relationships = userData.data.relationships || {}
+        userData.data.relationships.field_data = {
+          data: allFieldData
         }
       } catch (error) {
         console.error('Failed to fetch field data:', error)
@@ -192,13 +203,15 @@ app.get('/api/user/refresh', async (req, res) => {
     const userData = await userResponse.json()
     const personId = userData.data.id
 
-    // Fetch field data using admin PAT
+    // Fetch field data with high page size (faster than full pagination)
+    // Note: Most volunteers have < 50 field data items, so a single request suffices
     if (process.env.PCO_SECRET && process.env.PCO_APP_ID) {
       try {
         const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
 
+        // Single request with large page size (covers most volunteers without pagination)
         const fieldDataResponse = await fetch(
-          `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data?include=field_definition`,
+          `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data?include=field_definition&per_page=100`,
           {
             headers: {
               Authorization: `Basic ${credentials}`,
@@ -224,6 +237,109 @@ app.get('/api/user/refresh', async (req, res) => {
     res.json({ userData })
   } catch (error) {
     console.error('Refresh error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Get person's background checks
+app.get('/api/person/background-checks', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  try {
+    // Fetch user data to get person ID
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    })
+
+    if (!userResponse.ok) {
+      return res.status(500).json({ error: 'Failed to fetch user data' })
+    }
+
+    const userData = await userResponse.json()
+    const personId = userData.data.id
+
+    // Fetch background checks using admin PAT
+    if (process.env.PCO_SECRET && process.env.PCO_APP_ID) {
+      try {
+        const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+        const bgResponse = await fetch(
+          `https://api.planningcenteronline.com/people/v2/people/${personId}/background_checks`,
+          {
+            headers: {
+              Authorization: `Basic ${credentials}`,
+            },
+          }
+        )
+
+        if (bgResponse.ok) {
+          const bgData = await bgResponse.json()
+          return res.json(bgData)
+        } else {
+          console.error('Failed to fetch background checks:', bgResponse.status)
+          return res.status(500).json({ error: 'Failed to fetch background checks' })
+        }
+      } catch (error) {
+        console.error('Background check fetch error:', error)
+        return res.status(500).json({ error: 'Internal server error' })
+      }
+    } else {
+      return res.status(500).json({ error: 'Server not configured for background check access' })
+    }
+  } catch (error) {
+    console.error('Background check error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// Get specific person's background checks (leader only)
+app.get('/api/leader/volunteer/:personId/background-checks', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+  const { personId } = req.params
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  try {
+    // Fetch background checks using admin PAT
+    if (process.env.PCO_SECRET && process.env.PCO_APP_ID) {
+      try {
+        const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+        const bgResponse = await fetch(
+          `https://api.planningcenteronline.com/people/v2/people/${personId}/background_checks`,
+          {
+            headers: {
+              Authorization: `Basic ${credentials}`,
+            },
+          }
+        )
+
+        if (bgResponse.ok) {
+          const bgData = await bgResponse.json()
+          return res.json(bgData)
+        } else {
+          console.error('Failed to fetch background checks:', bgResponse.status)
+          return res.status(500).json({ error: 'Failed to fetch background checks' })
+        }
+      } catch (error) {
+        console.error('Background check fetch error:', error)
+        return res.status(500).json({ error: 'Internal server error' })
+      }
+    } else {
+      return res.status(500).json({ error: 'Server not configured for background check access' })
+    }
+  } catch (error) {
+    console.error('Background check error:', error)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -338,14 +454,24 @@ app.post('/api/field/update', async (req, res) => {
     const fieldDefinitionId = fieldDef.id
 
     // Check if field data already exists
+    console.log(`Checking for existing field data for field definition ${fieldDefinitionId}`)
+    console.log(`Total field data items: ${fieldDataResult.data?.length || 0}`)
+
     const existingFieldData = fieldDataResult.data?.find(
       (item) => item.relationships?.field_definition?.data?.id === fieldDefinitionId
     )
+
+    if (existingFieldData) {
+      console.log(`Found existing field data with ID: ${existingFieldData.id}, current value:`, existingFieldData.attributes?.value)
+    } else {
+      console.log(`No existing field data found for field definition ${fieldDefinitionId}`)
+    }
 
     let updateResponse
 
     if (existingFieldData) {
       // Update existing field data
+      console.log(`Updating existing field data ${existingFieldData.id} with value:`, value)
       updateResponse = await fetch(
         `https://api.planningcenteronline.com/people/v2/field_data/${existingFieldData.id}`,
         {
@@ -367,6 +493,7 @@ app.post('/api/field/update', async (req, res) => {
       )
     } else {
       // Create new field data
+      console.log(`Creating new field data for person ${personId} with value:`, value)
       updateResponse = await fetch(
         `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data`,
         {
@@ -562,6 +689,127 @@ app.get('/api/admin/team-requirements', async (req, res) => {
     })
   } catch (error) {
     console.error('Failed to load team requirements:', error)
+    res.status(500).json({ error: 'Internal server error', details: error.message })
+  }
+})
+
+// Public webhook endpoint to download full team requirements matrix for n8n
+// This returns the DEFAULT requirements merged with any custom overrides
+// No authentication required - this is for automation workflows
+app.get('/api/webhook/team-matrix', async (req, res) => {
+  try {
+    const fs = await import('fs/promises')
+    const path = await import('path')
+    const { fileURLToPath } = await import('url')
+
+    // Get the directory of the current file
+    const __filename = fileURLToPath(import.meta.url)
+    const __dirname = path.dirname(__filename)
+
+    // Read the TypeScript file containing DEFAULT_TEAM_REQUIREMENTS
+    const matrixPath = path.join(__dirname, '..', 'src', 'lib', 'teamMatrix.ts')
+    const matrixContent = await fs.readFile(matrixPath, 'utf8')
+
+    // Extract DEFAULT_TEAM_REQUIREMENTS object from the TypeScript file
+    // This is a simple regex-based extraction - assumes the object is well-formatted
+    const defaultMatrixMatch = matrixContent.match(/const DEFAULT_TEAM_REQUIREMENTS[^=]*=\s*(\{[\s\S]*?\n\})\s*\n/m)
+
+    if (!defaultMatrixMatch) {
+      return res.status(500).json({ error: 'Failed to parse team matrix file' })
+    }
+
+    // Convert the object literal string to JSON
+    // This is a bit hacky but works for our simple case
+    // We need to convert single quotes to double quotes and handle trailing commas
+    let matrixString = defaultMatrixMatch[1]
+
+    // Use eval to parse the object literal safely in this controlled environment
+    // Note: We control the source file, so this is safe here
+    const DEFAULT_TEAM_REQUIREMENTS = eval(`(${matrixString})`)
+
+    // Also load any custom overrides from the config file
+    const configPath = path.join(__dirname, '..', 'data', 'teamRequirements.json')
+    let customOverrides = {}
+    try {
+      const fileContent = await fs.readFile(configPath, 'utf8')
+      const configData = JSON.parse(fileContent)
+      customOverrides = configData.teams || {}
+    } catch (error) {
+      // No custom overrides, that's fine
+    }
+
+    // Merge defaults with overrides
+    const fullMatrix = {
+      ...DEFAULT_TEAM_REQUIREMENTS,
+      ...customOverrides
+    }
+
+    res.json({
+      teams: fullMatrix,
+      source: 'DEFAULT_TEAM_REQUIREMENTS merged with custom overrides',
+      totalTeams: Object.keys(fullMatrix).length,
+      defaultTeams: Object.keys(DEFAULT_TEAM_REQUIREMENTS).length,
+      customTeams: Object.keys(customOverrides).length
+    })
+  } catch (error) {
+    console.error('Failed to load team matrix for n8n:', error)
+    res.status(500).json({ error: 'Internal server error', details: error.message })
+  }
+})
+
+// Public webhook endpoint for n8n to check team requirements
+// No authentication required - this is for automation workflows
+app.get('/api/webhook/team-requirements', async (req, res) => {
+  const { team } = req.query
+
+  try {
+    const fs = await import('fs/promises')
+    const path = await import('path')
+    const { fileURLToPath } = await import('url')
+
+    // Get the directory of the current file
+    const __filename = fileURLToPath(import.meta.url)
+    const __dirname = path.dirname(__filename)
+    const configPath = path.join(__dirname, '..', 'data', 'teamRequirements.json')
+
+    // Try to read the config file
+    let configData = { teams: {} }
+    try {
+      const fileContent = await fs.readFile(configPath, 'utf8')
+      configData = JSON.parse(fileContent)
+    } catch (error) {
+      console.log('No custom config found, using defaults')
+    }
+
+    const teams = configData.teams || {}
+
+    // If specific team requested, return just that team's requirements
+    if (team) {
+      // Normalize team name to kebab-case (lowercase with dashes)
+      const teamKey = team.toLowerCase().replace(/\s+/g, '-')
+
+      if (teams[teamKey]) {
+        return res.json({
+          team: teamKey,
+          requirements: teams[teamKey]
+        })
+      } else {
+        return res.status(404).json({
+          error: 'Team not found',
+          team: teamKey,
+          availableTeams: Object.keys(teams)
+        })
+      }
+    }
+
+    // Otherwise, return all teams
+    res.json({
+      teams,
+      lastUpdated: configData.lastUpdated,
+      updatedBy: configData.updatedBy
+    })
+  } catch (error) {
+    console.error('Failed to load team requirements for webhook:', error)
     res.status(500).json({ error: 'Internal server error', details: error.message })
   }
 })

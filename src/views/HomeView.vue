@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { getSession, initiateLogin, logout, refreshUserData } from '@/lib/auth'
 import { loadTeamRequirements, getRequiredSteps, getCovenantLevel, getTeamDisplayName, type RequiredSteps } from '@/lib/teamMatrix'
 import OnboardingSteps from '@/components/OnboardingSteps.vue'
@@ -22,6 +22,8 @@ interface Step {
   action?: 'submit' | 'external' | 'pending-only'
   fieldName?: string
   covenantLevel?: 1 | 2 | 3
+  backgroundCheckStatus?: string
+  backgroundCheckDate?: string
 }
 
 interface AdditionalRequirement {
@@ -44,6 +46,9 @@ const personData = ref<any>(null)
 const fieldDefinitions = ref<any[]>([])
 const fieldData = ref<any[]>([])
 const selectedTab = ref<string | null>(null)
+const backgroundChecks = ref<any[]>([])
+let refreshInterval: ReturnType<typeof setInterval> | null = null
+let isRefreshing = ref(false)
 
 /**
  * Helper function to check if a date is within X years
@@ -61,24 +66,91 @@ function isWithinYears(dateString: string | null, years: number): boolean {
 }
 
 /**
- * Helper function to get field value by field name
+ * Get current background check (where current=true) or most recent
  */
-function getFieldValue(fieldName: string): any {
-  // Find the field definition by name
-  const fieldDef = fieldDefinitions.value.find((def: any) =>
-    def.attributes.name === fieldName
-  )
+function getCurrentBackgroundCheck() {
+  if (backgroundChecks.value.length === 0) return null
 
-  if (!fieldDef) {
+  // First, try to find a check marked as current
+  const currentCheck = backgroundChecks.value.find((check: any) => check.attributes.current === true)
+  if (currentCheck) return currentCheck
+
+  // Otherwise, return the most recent one (sorted by completed_at desc)
+  const sorted = [...backgroundChecks.value].sort((a: any, b: any) => {
+    const dateA = new Date(a.attributes.completed_at || 0).getTime()
+    const dateB = new Date(b.attributes.completed_at || 0).getTime()
+    return dateB - dateA
+  })
+  return sorted[0] || null
+}
+
+/**
+ * Check if background check is expired
+ */
+function isBackgroundCheckExpired(check: any): boolean {
+  if (!check || !check.attributes.expires_on) return false
+  try {
+    const expiresDate = new Date(check.attributes.expires_on)
+    const today = new Date()
+    return expiresDate < today
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Format date for display
+ */
+function formatDate(dateString: string | null): string {
+  if (!dateString) return ''
+  try {
+    const date = new Date(dateString)
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Helper function to get field value by field name or field ID
+ * Note: PCO multiselect fields return multiple FieldDatum objects with the same field_definition.id
+ */
+function getFieldValue(fieldNameOrId: string): any {
+  let fieldDefId: string | null = null
+
+  // Check if it's a numeric ID (like '959457')
+  if (/^\d+$/.test(fieldNameOrId)) {
+    fieldDefId = fieldNameOrId
+  } else {
+    // Find the field definition by name
+    const fieldDef = fieldDefinitions.value.find((def: any) =>
+      def.attributes.name === fieldNameOrId
+    )
+    if (fieldDef) {
+      fieldDefId = fieldDef.id
+    }
+  }
+
+  if (!fieldDefId) {
     return null
   }
 
-  // Find the field data that matches this definition ID
-  const field = fieldData.value.find((data: any) =>
-    data.relationships?.field_definition?.data?.id === fieldDef.id
+  // Get ALL field data with this definition ID (multiselect = multiple FieldDatum objects)
+  const fields = fieldData.value.filter((data: any) =>
+    data.relationships?.field_definition?.data?.id === fieldDefId
   )
 
-  return field?.attributes?.value || null
+  if (fields.length === 0) {
+    return null
+  }
+
+  // If multiple values, return as array
+  if (fields.length > 1) {
+    return fields.map((f: any) => f.attributes?.value).filter(Boolean)
+  }
+
+  // Single value
+  return fields[0]?.attributes?.value || null
 }
 
 /**
@@ -164,7 +236,7 @@ const steps = computed((): Step[] => {
       id: stepsList.length + 1,
       title: 'Declaration Form',
       description: 'This Declaration form must be completed and submitted before moving onto the background check step.',
-      link: 'https://riverchristianchurch.churchcenter.com/people/forms/818825',
+      link: 'https://riverchristianchurch.churchcenter.com/people/forms/937413',
       linkText: 'Complete Declaration Form',
       action: 'external',
       fieldName: 'Declaration Submitted',
@@ -175,29 +247,98 @@ const steps = computed((): Step[] => {
 
   // Step 2: Background Check Application (only if required)
   if (required.backgroundCheck) {
-    const bgSubmitted = getFieldValue('Background Check Application Submitted')
-    const bgPassed = personData.value.attributes.passed_background_check === true
-    const isSubmitted = bgSubmitted === 'Yes' || bgSubmitted === 'true' || bgSubmitted === true
+    const currentCheck = getCurrentBackgroundCheck()
 
-    stepsList.push({
+    let bgCompleted = false
+    let bgPending = false
+    let bgStatus = ''
+    let bgDate = ''
+    let description = ''
+    let action: 'submit' | 'external' | 'pending-only' = 'external'
+
+    if (!currentCheck) {
+      // No background check exists - show initial message
+      description = 'Expect an email to complete your background check. This should come to your email 1-2 days after your declaration is reviewed. (This procedure needs to be completed every 2 years.)'
+      action = 'pending-only'
+    } else {
+      const status = currentCheck.attributes.status
+      const statusUpdatedAt = currentCheck.attributes.status_updated_at
+      bgDate = formatDate(statusUpdatedAt)
+
+      // Check for various status values
+      if (status === 'report_processing' || status === 'pending') {
+        // Submitted, waiting for results
+        bgPending = true
+        bgStatus = 'report_processing'
+        description = `Background check submitted and processing. Status will update automatically when complete.`
+        action = 'pending-only'
+      } else if (status === 'manual_clear' || status === 'clear' || status === 'approved') {
+        // Background check passed
+        const isExpired = isBackgroundCheckExpired(currentCheck)
+        if (isExpired) {
+          // Expired - need new one
+          description = 'Your background check has expired. Please complete a new one.'
+          action = 'external'
+        } else {
+          // Valid and current
+          bgCompleted = true
+          bgStatus = 'manual_clear'
+          description = `Background check completed and approved.`
+          action = 'pending-only'
+        }
+      } else if (status === 'manual_not_clear' || status === 'not_clear' || status === 'denied') {
+        // Background check did not pass
+        bgStatus = 'manual_not_clear'
+        description = `Background check not cleared. Please contact the office for more information.`
+        action = 'pending-only'
+      } else {
+        // Unknown status - treat as pending
+        bgPending = true
+        bgStatus = status
+        description = `Background check status: ${status}`
+        action = 'pending-only'
+      }
+    }
+
+    const bgStep: Step = {
       id: stepsList.length + 1,
-      title: 'Background Check Application',
-      description: 'Follow this link to submit your personal background check information. After submitting, click the button below to mark as submitted. (This procedure needs to be completed every 2 years.)',
-      link: 'https://ministryopportunities.org/RCCFI',
-      linkText: 'Submit Background Check Application',
-      action: 'submit',
-      fieldName: 'Background Check Application Submitted',
-      completed: bgPassed,
-      pending: isSubmitted && !bgPassed
-    })
+      title: 'Background Check',
+      description,
+      action,
+      completed: bgCompleted,
+      pending: bgPending,
+      backgroundCheckStatus: bgStatus,
+      backgroundCheckDate: bgDate
+    }
+
+    // Only add link if action is not 'pending-only' (i.e., when expired or no check exists but declaration completed)
+    if (action === 'external') {
+      bgStep.link = 'https://ministryopportunities.org/RCCFI'
+      bgStep.linkText = 'Submit Background Check'
+    }
+
+    stepsList.push(bgStep)
   }
 
   // Step 3: Child Safety Training (only if required)
   if (required.childSafety) {
-    const submitted = getFieldValue('Child Safety Training Submitted')
-    const lastCompleted = getFieldValue('Child Safety Training Last Completed')
+    // Use field IDs directly since field names may not be in included definitions
+    const submitted = getFieldValue('959457') // Child Safety Training Submitted
+    const lastCompleted = getFieldValue('959458') // Child Safety Training Last Completed
     const isValid = isWithinYears(lastCompleted, CHILD_SAFETY_TRAINING_VALID_YEARS)
-    const isSubmitted = submitted === 'Yes' || submitted === 'true' || submitted === true
+
+    console.log('🔍 Child Safety Training Submitted (959457):', submitted, 'Type:', typeof submitted)
+    console.log('🔍 Submitted === "Yes":', submitted === 'Yes')
+    console.log('🔍 Submitted === "YES":', submitted === 'YES')
+    console.log('🔍 Last Completed (959458):', lastCompleted, 'Is Valid:', isValid)
+
+    // Debug: Show the actual field data for this field
+    const field959457 = fieldData.value.find((fd: any) => fd.relationships?.field_definition?.data?.id === '959457')
+    console.log('🔍 Raw field data for 959457:', field959457)
+
+    // Check if submitted - handle various boolean representations from PCO
+    const isSubmitted = submitted === 'Yes' || submitted === 'YES' || submitted === 'true' || submitted === true || submitted === 'yes' || submitted === 't'
+    console.log('🔍 isSubmitted:', isSubmitted)
 
     stepsList.push({
       id: stepsList.length + 1,
@@ -221,7 +362,9 @@ const steps = computed((): Step[] => {
     stepsList.push({
       id: stepsList.length + 1,
       title: 'Mandated Reporter Training',
-      description: `Complete the mandated reporter training online. This training is valid for ${MANDATED_REPORTER_TRAINING_VALID_YEARS} year and must be renewed annually.`,
+      description: `Complete the Mandated Reporter Training provided by the Florida Department of Children and Families by clicking the button below. RCC requires that volunteers and staff who directly or indirectly interact with children complete the training annually. Upon completion of the course, please click the button below and print a paper copy of your certificate and drop off at the church office, or print a PDF and email to <a href="mailto:admin@riverchristian.church" class="text-blue-600 hover:text-blue-700 underline">admin@riverchristian.church</a>.`,
+      link: 'https://www.myflfamilies.com/service-programs/abuse-hotline/training/',
+      linkText: 'Complete Training',
       fieldName: 'Mandated Reporter Training Submitted',
       action: 'submit',
       completed: isValid,
@@ -388,6 +531,78 @@ const additionalRequirements = computed((): AdditionalRequirement[] => {
   return additional
 })
 
+/**
+ * Load all user data (field data, background checks, etc.)
+ */
+async function loadUserData() {
+  // Prevent overlapping refreshes
+  if (isRefreshing.value) {
+    console.log('⏭️  Skipping refresh - already in progress')
+    return
+  }
+
+  isRefreshing.value = true
+  const startTime = Date.now()
+
+  try {
+    const session = getSession()
+    if (!session) {
+      isRefreshing.value = false
+      return
+    }
+
+    // Refresh user data to get latest field information
+    const freshData = await refreshUserData()
+    const userData = freshData || session.user
+
+    // Extract user name from PCO data
+    personData.value = userData.data
+    userName.value = personData.value.attributes.first_name || 'Volunteer'
+
+    // Extract custom fields and field definitions from included data
+    const included = userData.included || []
+
+    // Field definitions come from included
+    fieldDefinitions.value = included.filter((item: any) => item.type === 'FieldDefinition')
+
+    // Field data: FieldDatum objects are in userData.data.relationships.field_data.data
+    // The included array only has FieldDefinition objects (metadata about fields)
+    // The actual FieldDatum objects with values are in the relationships
+    const fieldDataFromRelationships = userData.data.relationships?.field_data?.data || []
+    fieldData.value = Array.isArray(fieldDataFromRelationships) ? fieldDataFromRelationships : []
+
+    console.log('🔍 Field data count:', fieldData.value.length)
+
+    // Get active teams (Onboarding In Progress For)
+    const activeTeamsValue = getFieldValue('Onboarding In Progress For')
+    activeTeams.value = parseMultiSelectValue(activeTeamsValue)
+
+    // Get completed teams (Onboarding Completed For)
+    const completedTeamsValue = getFieldValue('Onboarding Completed For')
+    completedTeams.value = parseMultiSelectValue(completedTeamsValue)
+
+    // Fetch background checks
+    try {
+      const bgResponse = await fetch(`/api/person/background-checks`, {
+        headers: {
+          'Authorization': `Bearer ${session.token}`,
+        },
+      })
+      if (bgResponse.ok) {
+        const bgData = await bgResponse.json()
+        backgroundChecks.value = bgData.data || []
+      }
+    } catch (error) {
+      console.log('Could not fetch background checks:', error)
+    }
+
+    const elapsed = Date.now() - startTime
+    console.log(`✓ Refresh completed in ${elapsed}ms`)
+  } finally {
+    isRefreshing.value = false
+  }
+}
+
 onMounted(async () => {
   // Load team requirements from API (with admin overrides)
   await loadTeamRequirements()
@@ -431,44 +646,23 @@ onMounted(async () => {
     console.log('Could not check leader status:', error)
   }
 
-  // Refresh user data to get latest field information
-  const freshData = await refreshUserData()
-  const userData = freshData || session.user
-
-  // Extract user name from PCO data
-  personData.value = userData.data
-  userName.value = personData.value.attributes.first_name || 'Volunteer'
-
-  // Extract custom fields and field definitions from included data
-  const included = userData.included || []
-
-  // Field data comes from relationships, not included
-  const fieldDataRelationship = userData.data.relationships?.field_data?.data || []
-  fieldData.value = Array.isArray(fieldDataRelationship) ? fieldDataRelationship : []
-
-  // Field definitions come from included
-  fieldDefinitions.value = included.filter((item: any) => item.type === 'FieldDefinition')
-
-  console.log('Field definitions loaded:', fieldDefinitions.value.length)
-  console.log('All field names:', fieldDefinitions.value.map((f: any) => f.attributes.name))
-
-  // Get active teams (Onboarding In Progress For)
-  const activeTeamsValue = getFieldValue('Onboarding In Progress For')
-  activeTeams.value = parseMultiSelectValue(activeTeamsValue)
-
-  // Get completed teams (Onboarding Completed For)
-  const completedTeamsValue = getFieldValue('Onboarding Completed For')
-  completedTeams.value = parseMultiSelectValue(completedTeamsValue)
-
-  console.log('Active teams:', activeTeams.value)
-  console.log('Completed teams:', completedTeams.value)
-
-  // Debug covenant fields
-  console.log('Public Presence Policy Signed:', getFieldValue('Public Presence Policy Signed'))
-  console.log('Moral Conduct Policy Signed:', getFieldValue('Moral Conduct Policy Signed'))
-  console.log('Covenant Signed:', getFieldValue('Covenant Signed'))
+  // Initial data load
+  await loadUserData()
 
   isLoading.value = false
+
+  // Set up automatic background refresh every 10 seconds
+  refreshInterval = setInterval(async () => {
+    console.log('🔄 Auto-refreshing user data...')
+    await loadUserData()
+  }, 10000) // 10 seconds
+})
+
+onUnmounted(() => {
+  // Clean up interval when component unmounts
+  if (refreshInterval) {
+    clearInterval(refreshInterval)
+  }
 })
 
 function handleLogin() {
@@ -515,9 +709,8 @@ async function handleMarkSubmitted(step: Step) {
     const result = await response.json()
     console.log('Update successful:', result)
 
-    // Refresh user data to get updated field values
-    await refreshUserData()
-    location.reload() // Reload to show updated status
+    // Refresh user data in the background to show updated status
+    await loadUserData()
   } catch (error) {
     console.error('Failed to mark as submitted:', error)
     alert('Failed to mark as submitted. Please try again.')
@@ -580,16 +773,60 @@ async function handleMarkSubmitted(step: Step) {
     <main class="max-w-5xl mx-auto px-6 py-12">
       <!-- Welcome Section -->
       <div class="bg-white rounded-2xl shadow-lg p-8 mb-8 border border-gray-100">
-        <h2 class="text-3xl font-bold text-gray-900 mb-4">
-          Hello, {{ userName }}!
-        </h2>
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-3xl font-bold text-gray-900">
+            Hello, {{ userName }}!
+          </h2>
+          <a
+            href="https://riverchristianchurch.churchcenter.com/me/profile-and-household"
+            target="_blank"
+            class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+            </svg>
+            Edit Profile
+          </a>
+        </div>
         <div class="prose prose-lg max-w-none text-gray-700">
           <p class="mb-4">
-            Thank you for taking the necessary steps to getting involved at RCC. Your time and service are so appreciated and because of volunteers like you, we are able to reach more for Christ.
+            Thank you for taking the necessary steps to getting involved at RCC. Your time and service are so appreciated and because of volunteers like you, we are able to reach more for Christ. Below you can see the team(s) you have volunteered to serve on and the steps required to get started. If you have any issues along the way feel free to reach out to one of our <a href="mailto:admin@riverchristian.church" class="text-blue-600 hover:text-blue-700 underline">admins</a>.
           </p>
-          <p class="mb-4">
-            Safety is our top priority, so every adult volunteer that may work around kids must complete a background check and the online child safety training prior to volunteering.
+          <p class="mb-6">
+            RCC utilizes Planning Center for scheduling, communication, and other administrative tasks. To complete the onboarding steps below, you will need to create an account. Once added to a serve team, you can view your schedule and update your block-out dates. You will be required to login twice as part of the process - once to Planning Center and once to Church Center. Both sites use the same email/phone but the login process is slightly different as detailed below.
           </p>
+
+          <!-- Login Cards -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 not-prose">
+            <!-- Planning Center Login Card -->
+            <div class="bg-gradient-to-br from-blue-50 to-blue-100 border-2 border-blue-200 rounded-xl p-6 shadow-sm">
+              <div class="flex items-start gap-3 mb-3">
+                <svg class="w-6 h-6 text-blue-600 mt-1 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+                </svg>
+                <h4 class="text-lg font-bold text-blue-900">Planning Center Login</h4>
+              </div>
+              <p class="text-sm text-gray-700">
+                Traditional username and password login. You completed this login to get to this page.
+              </p>
+            </div>
+
+            <!-- Church Center Login Card -->
+            <div class="bg-gradient-to-br from-green-50 to-green-100 border-2 border-green-200 rounded-xl p-6 shadow-sm">
+              <div class="flex items-start gap-3 mb-3">
+                <svg class="w-6 h-6 text-green-600 mt-1 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+                </svg>
+                <h4 class="text-lg font-bold text-green-900">Church Center Login</h4>
+              </div>
+              <p class="text-sm text-gray-700 mb-3">
+                Church Center is accessible to anyone at RCC who has ever checked in a child/student, registered for an event or group, or donated online. This login uses the same email/phone as Planning Center, but instead of a traditional password, you will be emailed/texted a six-digit code to gain access.
+              </p>
+              <p class="text-sm text-gray-700">
+                You will need to login to Church Center to update your profile information and complete any required forms below.
+              </p>
+            </div>
+          </div>
         </div>
 
         <!-- Show active teams (when no tabs) -->
@@ -647,13 +884,22 @@ async function handleMarkSubmitted(step: Step) {
             <div class="flex items-center justify-between mb-4">
               <h3 class="text-xl font-bold text-gray-900">Your Progress</h3>
               <span class="text-sm font-medium text-gray-600">
-                {{ steps.filter(s => s.completed).length }} of {{ steps.length }} completed
+                {{ steps.filter(s => s.completed || s.pending).length }} of {{ steps.length }} completed
               </span>
             </div>
-            <div class="w-full bg-gray-200 rounded-full h-3">
+            <div class="w-full bg-gray-200 rounded-full h-3 relative overflow-hidden">
+              <!-- Completed portion (green) -->
               <div
-                class="bg-gradient-to-r from-blue-600 to-blue-500 h-3 rounded-full transition-all duration-500"
+                class="absolute top-0 left-0 bg-green-500 h-3 transition-all duration-500"
                 :style="{ width: `${(steps.filter(s => s.completed).length / steps.length) * 100}%` }"
+              ></div>
+              <!-- Pending portion (yellow) - starts where completed ends -->
+              <div
+                class="absolute top-0 bg-yellow-500 h-3 transition-all duration-500"
+                :style="{
+                  left: `${(steps.filter(s => s.completed).length / steps.length) * 100}%`,
+                  width: `${(steps.filter(s => s.pending).length / steps.length) * 100}%`
+                }"
               ></div>
             </div>
           </div>
@@ -677,13 +923,22 @@ async function handleMarkSubmitted(step: Step) {
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-xl font-bold text-gray-900">Your Progress</h3>
             <span class="text-sm font-medium text-gray-600">
-              {{ steps.filter(s => s.completed).length }} of {{ steps.length }} completed
+              {{ steps.filter(s => s.completed || s.pending).length }} of {{ steps.length }} completed
             </span>
           </div>
-          <div class="w-full bg-gray-200 rounded-full h-3">
+          <div class="w-full bg-gray-200 rounded-full h-3 relative overflow-hidden">
+            <!-- Completed portion (green) -->
             <div
-              class="bg-gradient-to-r from-blue-600 to-blue-500 h-3 rounded-full transition-all duration-500"
+              class="absolute top-0 left-0 bg-green-500 h-3 transition-all duration-500"
               :style="{ width: `${(steps.filter(s => s.completed).length / steps.length) * 100}%` }"
+            ></div>
+            <!-- Pending portion (yellow) - starts where completed ends -->
+            <div
+              class="absolute top-0 bg-yellow-500 h-3 transition-all duration-500"
+              :style="{
+                left: `${(steps.filter(s => s.completed).length / steps.length) * 100}%`,
+                width: `${(steps.filter(s => s.pending).length / steps.length) * 100}%`
+              }"
             ></div>
           </div>
         </div>
