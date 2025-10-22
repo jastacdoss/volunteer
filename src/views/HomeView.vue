@@ -10,6 +10,9 @@ import AppHeader from '@/components/AppHeader.vue'
 const CHILD_SAFETY_TRAINING_VALID_YEARS = Number(import.meta.env.VITE_CHILD_SAFETY_TRAINING_VALID_YEARS || 2)
 const MANDATED_REPORTER_TRAINING_VALID_YEARS = Number(import.meta.env.VITE_MANDATED_REPORTER_TRAINING_VALID_YEARS || 1)
 
+// Training URLs
+const MANDATED_REPORTER_URL = import.meta.env.VITE_MANDATED_REPORTER_URL || 'https://www.myflfamilies.com/sites/default/files/PT/FlProMandatedReporter/story.html'
+
 interface Step {
   id: number
   title: string
@@ -365,7 +368,7 @@ const steps = computed((): Step[] => {
       id: stepsList.length + 1,
       title: 'Mandated Reporter Training',
       description: `Complete the Mandated Reporter Training provided by the Florida Department of Children and Families by clicking the button below. RCC requires that volunteers and staff who directly or indirectly interact with children complete the training annually. Upon completion of the course, please click the button below and print a paper copy of your certificate and drop off at the church office, or print a PDF and email to <a href="mailto:admin@riverchristian.church" class="text-blue-600 hover:text-blue-700 underline">admin@riverchristian.church</a>.`,
-      link: 'https://www.myflfamilies.com/service-programs/abuse-hotline/training/',
+      link: MANDATED_REPORTER_URL,
       linkText: 'Complete Training',
       fieldName: 'Mandated Reporter Training Submitted',
       action: 'submit',
