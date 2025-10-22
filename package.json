@@ -16,6 +16,7 @@
     "type-check": "vue-tsc --build"
   },
   "dependencies": {
+    "@upstash/redis": "^1.35.6",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { getSession } from '@/lib/auth'
+import { getSession, checkPermissions as checkCachedPermissions } from '@/lib/auth'
 import { type TeamRequirements, getTeamDisplayName, getTeamRequirements } from '@/lib/teamMatrix'
+import AppHeader from '@/components/AppHeader.vue'
 
 interface TeamRow {
   key: string
@@ -232,7 +233,7 @@ async function loadTeamData() {
   }
 }
 
-// Check if user is admin
+// Check if user is admin (uses cache)
 async function checkAdminStatus() {
   try {
     const session = getSession()
@@ -241,17 +242,9 @@ async function checkAdminStatus() {
       return
     }
 
-    // Call API to check admin status
-    const response = await fetch('/api/admin/check', {
-      headers: {
-        'Authorization': `Bearer ${session.token}`,
-      },
-    })
-
-    if (response.ok) {
-      const data = await response.json()
-      isAdmin.value = data.isAdmin
-    }
+    // Use cached permissions
+    const permissions = await checkCachedPermissions()
+    isAdmin.value = permissions.isAdmin
 
     isLoading.value = false
   } catch (error) {
@@ -295,42 +288,33 @@ onMounted(async () => {
 
   <!-- Admin Interface -->
   <div v-else class="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-slate-100">
-    <!-- Header -->
-    <header class="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-10">
-      <div class="max-w-7xl mx-auto px-6 py-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <h1 class="text-2xl font-bold text-gray-900">Team Requirements Matrix</h1>
-            <p class="text-sm text-gray-600 mt-1">Manage onboarding requirements for all volunteer teams</p>
-          </div>
-          <div class="flex items-center gap-3">
-            <a
-              href="/"
-              class="px-4 py-2 text-gray-700 hover:text-gray-900 font-medium transition-colors"
-            >
-              Back to Portal
-            </a>
-            <button
-              v-if="hasChanges"
-              @click="resetChanges"
-              class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
-            >
-              Discard Changes
-            </button>
-            <button
-              v-if="hasChanges"
-              @click="saveChanges"
-              class="px-6 py-2 bg-gradient-to-r from-blue-600 to-blue-500 text-white font-semibold rounded-lg hover:from-blue-700 hover:to-blue-600 transition-all shadow-md hover:shadow-lg"
-            >
-              Save Changes
-            </button>
-          </div>
-        </div>
-      </div>
-    </header>
+    <!-- Header with Sub-Navigation -->
+    <AppHeader title="Admin" :showAdminSubNav="true">
+      <template #admin-actions>
+        <button
+          v-if="hasChanges"
+          @click="resetChanges"
+          class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors text-sm font-medium"
+        >
+          Discard Changes
+        </button>
+        <button
+          v-if="hasChanges"
+          @click="saveChanges"
+          class="px-6 py-2 bg-gradient-to-r from-blue-600 to-blue-500 text-white font-semibold rounded-lg hover:from-blue-700 hover:to-blue-600 transition-all shadow-md hover:shadow-lg text-sm"
+        >
+          Save Changes
+        </button>
+      </template>
+    </AppHeader>
 
     <!-- Main Content -->
-    <main class="max-w-7xl mx-auto px-6 py-8">
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div class="mb-4">
+        <h2 class="text-2xl font-bold text-gray-900">Team Requirements Matrix</h2>
+        <p class="text-sm text-gray-600 mt-1">Manage onboarding requirements for all volunteer teams</p>
+      </div>
+
       <!-- Search -->
       <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
         <label class="block text-sm font-semibold text-gray-700 mb-2">Search Teams</label>

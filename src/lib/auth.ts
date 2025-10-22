@@ -45,6 +45,7 @@ export function getSession() {
 export function clearSession() {
   sessionStorage.removeItem('pco_token')
   sessionStorage.removeItem('pco_user')
+  clearCachedPermissions()
 }
 
 export function logout() {
@@ -81,5 +82,101 @@ export async function refreshUserData() {
     clearSession()
     window.location.href = '/'
     return null
+  }
+}
+
+// Cached permissions interface
+interface CachedPermissions {
+  isAdmin: boolean
+  isLeader: boolean
+  ministries: string[]
+  timestamp: number
+}
+
+const PERMISSIONS_CACHE_KEY = 'pco_permissions_cache'
+const CACHE_DURATION = 10 * 60 * 1000 // 10 minutes
+
+export function getCachedPermissions(): CachedPermissions | null {
+  const cached = sessionStorage.getItem(PERMISSIONS_CACHE_KEY)
+  if (!cached) return null
+
+  try {
+    const data = JSON.parse(cached) as CachedPermissions
+
+    // Check if cache is still valid (within 10 minutes)
+    if (Date.now() - data.timestamp < CACHE_DURATION) {
+      console.log('[Auth Cache] Using cached permissions')
+      return data
+    }
+
+    console.log('[Auth Cache] Cache expired, will fetch fresh data')
+    return null
+  } catch (error) {
+    console.error('[Auth Cache] Failed to parse cached permissions:', error)
+    return null
+  }
+}
+
+export function setCachedPermissions(permissions: Omit<CachedPermissions, 'timestamp'>) {
+  const data: CachedPermissions = {
+    ...permissions,
+    timestamp: Date.now()
+  }
+  sessionStorage.setItem(PERMISSIONS_CACHE_KEY, JSON.stringify(data))
+  console.log('[Auth Cache] Cached permissions:', permissions)
+}
+
+export function clearCachedPermissions() {
+  sessionStorage.removeItem(PERMISSIONS_CACHE_KEY)
+}
+
+export async function checkPermissions(): Promise<CachedPermissions> {
+  // Check cache first
+  const cached = getCachedPermissions()
+  if (cached) {
+    return cached
+  }
+
+  console.log('[Auth Cache] Fetching fresh permissions from API')
+
+  const session = getSession()
+  if (!session) {
+    throw new Error('No session found')
+  }
+
+  try {
+    // Fetch both in parallel
+    const [leaderResponse, adminResponse] = await Promise.all([
+      fetch('/api/leader/check', {
+        headers: { 'Authorization': `Bearer ${session.token}` },
+      }),
+      fetch('/api/admin/check', {
+        headers: { 'Authorization': `Bearer ${session.token}` },
+      }),
+    ])
+
+    if (!leaderResponse.ok) {
+      throw new Error('Failed to check leader status')
+    }
+
+    const leaderData = await leaderResponse.json()
+    const isLeader = leaderData.isLeader
+    const ministries = leaderData.ministries || []
+
+    let isAdmin = false
+    if (adminResponse.ok) {
+      const adminData = await adminResponse.json()
+      isAdmin = adminData.isAdmin
+    }
+
+    const permissions = { isAdmin, isLeader, ministries }
+
+    // Cache the results
+    setCachedPermissions(permissions)
+
+    return { ...permissions, timestamp: Date.now() }
+  } catch (error) {
+    console.error('Failed to check permissions:', error)
+    throw error
   }
 }

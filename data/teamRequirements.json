@@ -1,5 +1,5 @@
 {
-  "lastUpdated": "2025-10-13T15:12:22.840Z",
+  "lastUpdated": "2025-10-21T20:44:19.953Z",
   "updatedBy": "Jason Doss",
   "teams": {
     "staff": {
@@ -136,7 +136,7 @@
       "welcomeToRCC": false,
       "membership": false,
       "lifeGroup": false,
-      "covenant": false,
+      "covenant": true,
       "moralConduct": false,
       "discipleship": false,
       "leadership": false,
@@ -248,7 +248,7 @@
       "welcomeToRCC": true,
       "membership": false,
       "lifeGroup": false,
-      "covenant": false,
+      "covenant": true,
       "moralConduct": false,
       "discipleship": false,
       "leadership": false,
@@ -360,7 +360,7 @@
       "welcomeToRCC": false,
       "membership": false,
       "lifeGroup": true,
-      "covenant": false,
+      "covenant": true,
       "moralConduct": false,
       "discipleship": false,
       "leadership": false,

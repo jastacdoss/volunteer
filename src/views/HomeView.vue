@@ -4,6 +4,7 @@ import { getSession, initiateLogin, logout, refreshUserData } from '@/lib/auth'
 import { loadTeamRequirements, getRequiredSteps, getCovenantLevel, getTeamDisplayName, type RequiredSteps } from '@/lib/teamMatrix'
 import OnboardingSteps from '@/components/OnboardingSteps.vue'
 import AdditionalRequirements from '@/components/AdditionalRequirements.vue'
+import AppHeader from '@/components/AppHeader.vue'
 
 // Environment variables for training validity periods
 const CHILD_SAFETY_TRAINING_VALID_YEARS = Number(import.meta.env.VITE_CHILD_SAFETY_TRAINING_VALID_YEARS || 2)
@@ -324,13 +325,13 @@ const steps = computed((): Step[] => {
   if (required.childSafety) {
     // Use field IDs directly since field names may not be in included definitions
     const submitted = getFieldValue('959457') // Child Safety Training Submitted
-    const lastCompleted = getFieldValue('959458') // Child Safety Training Last Completed
+    const lastCompleted = getFieldValue('959380') // Child Safety Training Last Completed
     const isValid = isWithinYears(lastCompleted, CHILD_SAFETY_TRAINING_VALID_YEARS)
 
     console.log('🔍 Child Safety Training Submitted (959457):', submitted, 'Type:', typeof submitted)
     console.log('🔍 Submitted === "Yes":', submitted === 'Yes')
     console.log('🔍 Submitted === "YES":', submitted === 'YES')
-    console.log('🔍 Last Completed (959458):', lastCompleted, 'Is Valid:', isValid)
+    console.log('🔍 Last Completed (959380):', lastCompleted, 'Is Valid:', isValid)
 
     // Debug: Show the actual field data for this field
     const field959457 = fieldData.value.find((fd: any) => fd.relationships?.field_definition?.data?.id === '959457')
@@ -354,10 +355,11 @@ const steps = computed((): Step[] => {
 
   // Step 4: Mandated Reporter Training (only if required)
   if (required.mandatedReporter) {
-    const submitted = getFieldValue('Mandated Reporter Training Submitted')
-    const lastCompleted = getFieldValue('Mandated Reporter Training Last Completed')
+    // Use field IDs directly since field names may not be in included definitions
+    const submitted = getFieldValue('959458') // Mandated Reporter Training Submitted
+    const lastCompleted = getFieldValue('959382') // Mandated Reporter Training Last Completed
     const isValid = isWithinYears(lastCompleted, MANDATED_REPORTER_TRAINING_VALID_YEARS)
-    const isSubmitted = submitted === 'Yes' || submitted === 'true' || submitted === true
+    const isSubmitted = submitted === 'Yes' || submitted === 'true' || submitted === true || submitted === 'yes' || submitted === 't'
 
     stepsList.push({
       id: stepsList.length + 1,
@@ -616,36 +618,6 @@ onMounted(async () => {
 
   isAuthenticated.value = true
 
-  // Check if user is admin
-  try {
-    const adminResponse = await fetch('/api/admin/check', {
-      headers: {
-        'Authorization': `Bearer ${session.token}`,
-      },
-    })
-    if (adminResponse.ok) {
-      const adminData = await adminResponse.json()
-      isUserAdmin.value = adminData.isAdmin
-    }
-  } catch (error) {
-    console.log('Could not check admin status:', error)
-  }
-
-  // Check if user is a leader
-  try {
-    const leaderResponse = await fetch('/api/leader/check', {
-      headers: {
-        'Authorization': `Bearer ${session.token}`,
-      },
-    })
-    if (leaderResponse.ok) {
-      const leaderData = await leaderResponse.json()
-      isUserLeader.value = leaderData.isLeader
-    }
-  } catch (error) {
-    console.log('Could not check leader status:', error)
-  }
-
   // Initial data load
   await loadUserData()
 
@@ -736,38 +708,7 @@ async function handleMarkSubmitted(step: Step) {
   <!-- Authenticated - show dashboard -->
   <div v-else-if="!isLoading" class="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50">
     <!-- Header -->
-    <header class="bg-white shadow-sm border-b border-gray-200">
-      <div class="max-w-5xl mx-auto px-6 py-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <h1 class="text-2xl font-bold text-gray-900">RCC Volunteer Onboarding</h1>
-            <p class="text-sm text-gray-600 mt-1">River Christian Church</p>
-          </div>
-          <div class="flex items-center gap-4">
-            <a
-              v-if="isUserLeader"
-              href="/leader"
-              class="text-sm text-blue-600 hover:text-blue-700 font-semibold"
-            >
-              Leader Dashboard
-            </a>
-            <a
-              v-if="isUserAdmin"
-              href="/admin"
-              class="text-sm text-blue-600 hover:text-blue-700 font-semibold"
-            >
-              Admin
-            </a>
-            <button
-              @click="handleLogout"
-              class="text-sm text-gray-600 hover:text-gray-900 font-medium"
-            >
-              Sign Out
-            </button>
-          </div>
-        </div>
-      </div>
-    </header>
+    <AppHeader title="My Onboarding" />
 
     <!-- Main Content -->
     <main class="max-w-5xl mx-auto px-6 py-12">
