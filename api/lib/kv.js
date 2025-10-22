@@ -59,7 +59,9 @@ export async function clearAllVolunteers() {
 }
 
 // Delete a single volunteer
+// Returns the number of keys deleted (1 if successful, 0 if key didn't exist)
 export async function deleteVolunteer(id) {
   const client = getRedis()
-  await client.del(`volunteer:${id}`)
+  const result = await client.del(`volunteer:${id}`)
+  return result
 }

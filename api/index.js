@@ -2119,8 +2119,17 @@ app.post('/api/admin/complete-onboarding', async (req, res) => {
     }
 
     // Clear Redis cache for this volunteer
-    await deleteVolunteer(personId)
-    console.log(`[Complete Onboarding] Cleared Redis cache for volunteer:${personId}`)
+    console.log(`[Complete Onboarding] Attempting to delete volunteer:${personId} from Redis`)
+    const deleteResult = await deleteVolunteer(personId)
+    console.log(`[Complete Onboarding] Redis deletion result: ${deleteResult} (1=success, 0=key didn't exist)`)
+
+    // Verify deletion
+    const verification = await getVolunteer(personId)
+    if (verification) {
+      console.error(`[Complete Onboarding] WARNING: volunteer:${personId} still exists in Redis after deletion!`)
+    } else {
+      console.log(`[Complete Onboarding] Verified: volunteer:${personId} successfully removed from Redis`)
+    }
 
     res.json({ success: true, personId })
   } catch (error) {
