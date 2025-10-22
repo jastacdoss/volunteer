@@ -287,10 +287,10 @@ async function toggleReview(volunteerId: string, fieldName: string, currentValue
       if (fieldKey) {
         // Toggle the date field (set to today's date if checking, null if unchecking)
         if (!currentValue) {
-          volunteer.fields[fieldKey] = new Date().toISOString().split('T')[0]
+          (volunteer.fields as any)[fieldKey] = new Date().toISOString().split('T')[0]
           volunteer.progress.completed = Math.min(volunteer.progress.completed + 1, volunteer.progress.total)
         } else {
-          volunteer.fields[fieldKey] = null
+          (volunteer.fields as any)[fieldKey] = null
           volunteer.progress.completed = Math.max(volunteer.progress.completed - 1, 0)
         }
       }
@@ -339,7 +339,7 @@ async function setFieldDate(volunteerId: string, fieldName: string) {
 
       const fieldKey = fieldMap[fieldName]
       if (fieldKey) {
-        volunteer.fields[fieldKey] = today
+        (volunteer.fields as any)[fieldKey] = today
         // Update progress if this field is required
         const requiredFieldMap: Record<string, keyof RequiredFields> = {
           'Declaration Reviewed': 'declaration',
