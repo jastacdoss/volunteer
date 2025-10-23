@@ -2240,15 +2240,15 @@ app.post('/api/admin/remove-viewer-permissions', async (req, res) => {
     }
 
     // Get parameters
-    const { listId = '4529147', dryRun = false } = req.body
+    const { listId = '4529147', personId = null, dryRun = false } = req.body
 
-    console.log(`[/api/admin/remove-viewer-permissions] Starting - listId: ${listId}, dryRun: ${dryRun}`)
+    console.log(`[/api/admin/remove-viewer-permissions] Starting - ${personId ? `personId: ${personId}` : `listId: ${listId}`}, dryRun: ${dryRun}`)
 
     // Dynamically import the script function
     const { removeViewerPermissions } = await import('../scripts/add-viewer-permissions.js')
 
     // Execute the function
-    const results = await removeViewerPermissions(listId, dryRun)
+    const results = await removeViewerPermissions(listId, personId, dryRun)
 
     console.log(`[/api/admin/remove-viewer-permissions] Completed - ${results.succeeded} succeeded, ${results.failed} failed`)
 

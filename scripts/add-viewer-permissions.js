@@ -7,15 +7,16 @@
  * and removes "Viewer" permissions from each person's People app access.
  *
  * Usage:
- *   node scripts/add-viewer-permissions.js [--list-id=XXXX] [--dry-run]
+ *   node scripts/add-viewer-permissions.js [--list-id=XXXX] [--person-id=XXXX] [--dry-run]
  *
  * Options:
- *   --list-id=XXXX    PCO List ID (default: 4529147)
+ *   --list-id=XXXX    PCO List ID (default: 4529147) - processes all people in list
+ *   --person-id=XXXX  PCO Person ID - processes only this specific person
  *   --dry-run         Preview changes without applying them
  *
  * For n8n integration:
  *   Call the API endpoint: POST /api/admin/remove-viewer-permissions
- *   Body: { listId: "4529147", dryRun: false }
+ *   Body: { listId: "4529147", personId: "123456", dryRun: false }
  */
 
 import dotenv from 'dotenv'
@@ -77,6 +78,21 @@ async function makeRequest(url, options = {}, retries = 3) {
       await sleep(1000 * attempt) // Exponential backoff
     }
   }
+}
+
+// Fetch a single person by ID
+async function fetchPersonById(personId) {
+  console.log(`Fetching person ${personId}...`)
+
+  const response = await makeRequest(`${BASE_URL}/people/${personId}`)
+
+  if (response.status === 404) {
+    throw new Error(`Person ${personId} not found`)
+  }
+
+  const data = await response.json()
+  console.log(`Found person: ${data.data.attributes?.name || 'Unknown'}\n`)
+  return [data.data]
 }
 
 // Fetch all people from a list with pagination
@@ -144,11 +160,15 @@ async function removeViewerPermission(personId, personName, dryRun = false) {
 }
 
 // Main function - exported for API/n8n use
-export async function removeViewerPermissions(listId = '4529147', dryRun = false) {
+export async function removeViewerPermissions(listId = '4529147', personId = null, dryRun = false) {
   console.log('='.repeat(60))
-  console.log('Remove Viewer Permissions from PCO List')
+  console.log('Remove Viewer Permissions from PCO')
   console.log('='.repeat(60))
-  console.log(`List ID: ${listId}`)
+  if (personId) {
+    console.log(`Person ID: ${personId}`)
+  } else {
+    console.log(`List ID: ${listId}`)
+  }
   console.log(`Mode: ${dryRun ? 'DRY RUN' : 'LIVE'}`)
   console.log('='.repeat(60))
   console.log()
@@ -163,12 +183,17 @@ export async function removeViewerPermissions(listId = '4529147', dryRun = false
   }
 
   try {
-    // Fetch all people from the list
-    const people = await fetchPeopleFromList(listId)
+    // Fetch people - either single person or entire list
+    let people
+    if (personId) {
+      people = await fetchPersonById(personId)
+    } else {
+      people = await fetchPeopleFromList(listId)
+    }
     results.total = people.length
 
     if (people.length === 0) {
-      console.log('No people found in list.')
+      console.log('No people found.')
       return results
     }
 
@@ -239,9 +264,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2)
   const listIdArg = args.find(arg => arg.startsWith('--list-id='))
   const listId = listIdArg ? listIdArg.split('=')[1] : '4529147'
+  const personIdArg = args.find(arg => arg.startsWith('--person-id='))
+  const personId = personIdArg ? personIdArg.split('=')[1] : null
   const dryRun = args.includes('--dry-run')
 
-  removeViewerPermissions(listId, dryRun)
+  removeViewerPermissions(listId, personId, dryRun)
     .then(results => {
       process.exit(results.failed > 0 ? 1 : 0)
     })
