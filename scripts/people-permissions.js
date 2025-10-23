@@ -1,22 +1,54 @@
 #!/usr/bin/env node
 
 /**
- * Remove Viewer Permissions from People in PCO List
+ * Manage People Permissions in Planning Center Online
  *
- * This script fetches all people from a Planning Center Online list
- * and removes "Viewer" permissions from each person's People app access.
+ * This script allows you to set People app permissions for individuals or
+ * entire lists in Planning Center Online. Useful for bulk permission management.
  *
- * Usage:
- *   node scripts/add-viewer-permissions.js [--list-id=XXXX] [--person-id=XXXX] [--dry-run]
+ * PERMISSION LEVELS (Planning Center People App):
+ *   - null        : No Access (removes all People app permissions)
+ *   - "Viewer"    : Can view people and limited data
+ *   - "Editor"    : Can edit people and most data
+ *   - "Manager"   : Full access to manage People app
  *
- * Options:
- *   --list-id=XXXX    PCO List ID (default: 4529147) - processes all people in list
- *   --person-id=XXXX  PCO Person ID - processes only this specific person
- *   --dry-run         Preview changes without applying them
+ * USAGE EXAMPLES:
  *
- * For n8n integration:
- *   Call the API endpoint: POST /api/admin/remove-viewer-permissions
- *   Body: { listId: "4529147", personId: "123456", dryRun: false }
+ *   Set entire list to Viewer:
+ *     node scripts/people-permissions.js --permission=Viewer --list-id=4529147
+ *
+ *   Remove permissions from entire list:
+ *     node scripts/people-permissions.js --permission=null --list-id=4529147
+ *
+ *   Set single person to Editor:
+ *     node scripts/people-permissions.js --permission=Editor --person-id=146008529
+ *
+ *   Preview changes (dry run):
+ *     node scripts/people-permissions.js --permission=Viewer --list-id=4529147 --dry-run
+ *
+ * OPTIONS:
+ *   --permission=XXXX  Permission level: null, Viewer, Editor, or Manager (REQUIRED)
+ *   --list-id=XXXX     PCO List ID - processes all people in list
+ *   --person-id=XXXX   PCO Person ID - processes only this specific person
+ *   --dry-run          Preview changes without applying them
+ *
+ * FOR N8N INTEGRATION:
+ *   Endpoint: POST /api/admin/people-permissions
+ *
+ *   Set entire list:
+ *     { "permission": "Viewer", "listId": "4529147", "dryRun": false }
+ *
+ *   Set single person:
+ *     { "permission": "Editor", "personId": "146008529", "dryRun": false }
+ *
+ *   Remove permissions:
+ *     { "permission": null, "listId": "4529147", "dryRun": false }
+ *
+ * NOTE FOR FUTURE REFERENCE:
+ *   This script is particularly useful at the start of each year when you need to:
+ *   - Grant Viewer access to a new cohort of volunteers
+ *   - Remove permissions from people who are no longer active
+ *   - Bulk update permission levels for specific groups
  */
 
 import dotenv from 'dotenv'
@@ -121,10 +153,12 @@ async function fetchPeopleFromList(listId) {
   return people
 }
 
-// Remove Viewer permission from a person (set to No Access)
-async function removeViewerPermission(personId, personName, dryRun = false) {
+// Set permission for a person
+async function setPersonPermission(personId, personName, permission, dryRun = false) {
+  const permissionDisplay = permission === null ? 'No Access' : permission
+
   if (dryRun) {
-    console.log(`[DRY RUN] Would remove Viewer permission from: ${personName} (${personId})`)
+    console.log(`[DRY RUN] Would set permission to '${permissionDisplay}' for: ${personName} (${personId})`)
     return { success: true, skipped: true }
   }
 
@@ -138,7 +172,7 @@ async function removeViewerPermission(personId, personName, dryRun = false) {
             type: 'Person',
             id: personId,
             attributes: {
-              people_permissions: 'No Access'
+              people_permissions: permission
             }
           }
         })
@@ -146,7 +180,7 @@ async function removeViewerPermission(personId, personName, dryRun = false) {
     )
 
     if (response.ok) {
-      console.log(`✓ Removed Viewer permission: ${personName} (${personId})`)
+      console.log(`✓ Set permission to '${permissionDisplay}': ${personName} (${personId})`)
       return { success: true, personId, personName }
     } else {
       const errorText = await response.text()
@@ -159,15 +193,31 @@ async function removeViewerPermission(personId, personName, dryRun = false) {
   }
 }
 
+// Validate permission value
+function validatePermission(permission) {
+  const validPermissions = [null, 'Viewer', 'Editor', 'Manager']
+  if (!validPermissions.includes(permission)) {
+    throw new Error(`Invalid permission: ${permission}. Must be one of: null, Viewer, Editor, Manager`)
+  }
+}
+
 // Main function - exported for API/n8n use
-export async function removeViewerPermissions(listId = '4529147', personId = null, dryRun = false) {
+export async function setPeoplePermissions(permission, listId = null, personId = null, dryRun = false) {
+  // Validate permission
+  validatePermission(permission)
+
+  const permissionDisplay = permission === null ? 'No Access' : permission
+
   console.log('='.repeat(60))
-  console.log('Remove Viewer Permissions from PCO')
+  console.log('Set People Permissions in PCO')
   console.log('='.repeat(60))
+  console.log(`Permission: ${permissionDisplay}`)
   if (personId) {
     console.log(`Person ID: ${personId}`)
-  } else {
+  } else if (listId) {
     console.log(`List ID: ${listId}`)
+  } else {
+    throw new Error('Either listId or personId must be provided')
   }
   console.log(`Mode: ${dryRun ? 'DRY RUN' : 'LIVE'}`)
   console.log('='.repeat(60))
@@ -206,7 +256,7 @@ export async function removeViewerPermissions(listId = '4529147', personId = nul
       const personId = person.id
       const personName = person.attributes?.name || 'Unknown'
 
-      const result = await removeViewerPermission(personId, personName, dryRun)
+      const result = await setPersonPermission(personId, personName, permission, dryRun)
 
       if (result.success && result.skipped) {
         results.skipped++
@@ -262,18 +312,32 @@ export async function removeViewerPermissions(listId = '4529147', personId = nul
 // CLI execution
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2)
+
+  const permissionArg = args.find(arg => arg.startsWith('--permission='))
+  if (!permissionArg) {
+    console.error('Error: --permission is required')
+    console.error('Valid values: null, Viewer, Editor, Manager')
+    console.error('Example: node scripts/people-permissions.js --permission=Viewer --list-id=4529147')
+    process.exit(1)
+  }
+
+  const permissionValue = permissionArg.split('=')[1]
+  const permission = permissionValue === 'null' ? null : permissionValue
+
   const listIdArg = args.find(arg => arg.startsWith('--list-id='))
-  const listId = listIdArg ? listIdArg.split('=')[1] : '4529147'
+  const listId = listIdArg ? listIdArg.split('=')[1] : null
+
   const personIdArg = args.find(arg => arg.startsWith('--person-id='))
   const personId = personIdArg ? personIdArg.split('=')[1] : null
+
   const dryRun = args.includes('--dry-run')
 
-  removeViewerPermissions(listId, personId, dryRun)
+  setPeoplePermissions(permission, listId, personId, dryRun)
     .then(results => {
       process.exit(results.failed > 0 ? 1 : 0)
     })
     .catch(error => {
-      console.error('Script failed:', error)
+      console.error('Script failed:', error.message)
       process.exit(1)
     })
 }

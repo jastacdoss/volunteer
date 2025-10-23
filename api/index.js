@@ -2223,8 +2223,8 @@ app.get('/api/references/:personId', async (req, res) => {
   }
 })
 
-// Remove Viewer Permissions from PCO List (Admin only, for n8n integration)
-app.post('/api/admin/remove-viewer-permissions', async (req, res) => {
+// Set People Permissions in PCO (Admin only, for n8n integration)
+app.post('/api/admin/people-permissions', async (req, res) => {
   try {
     // Verify admin authentication
     const authHeader = req.headers.authorization
@@ -2240,24 +2240,29 @@ app.post('/api/admin/remove-viewer-permissions', async (req, res) => {
     }
 
     // Get parameters
-    const { listId = '4529147', personId = null, dryRun = false } = req.body
+    const { permission, listId = null, personId = null, dryRun = false } = req.body
 
-    console.log(`[/api/admin/remove-viewer-permissions] Starting - ${personId ? `personId: ${personId}` : `listId: ${listId}`}, dryRun: ${dryRun}`)
+    if (permission === undefined) {
+      return res.status(400).json({ error: 'Permission parameter is required (null, Viewer, Editor, or Manager)' })
+    }
+
+    const permissionDisplay = permission === null ? 'No Access' : permission
+    console.log(`[/api/admin/people-permissions] Starting - permission: ${permissionDisplay}, ${personId ? `personId: ${personId}` : `listId: ${listId}`}, dryRun: ${dryRun}`)
 
     // Dynamically import the script function
-    const { removeViewerPermissions } = await import('../scripts/add-viewer-permissions.js')
+    const { setPeoplePermissions } = await import('../scripts/people-permissions.js')
 
     // Execute the function
-    const results = await removeViewerPermissions(listId, personId, dryRun)
+    const results = await setPeoplePermissions(permission, listId, personId, dryRun)
 
-    console.log(`[/api/admin/remove-viewer-permissions] Completed - ${results.succeeded} succeeded, ${results.failed} failed`)
+    console.log(`[/api/admin/people-permissions] Completed - ${results.succeeded} succeeded, ${results.failed} failed`)
 
     res.json({
       success: true,
       results
     })
   } catch (error) {
-    console.error('[/api/admin/remove-viewer-permissions] Error:', error)
+    console.error('[/api/admin/people-permissions] Error:', error)
     res.status(500).json({
       success: false,
       error: 'Internal server error',
