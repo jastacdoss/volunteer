@@ -60,7 +60,7 @@ const teamGroups = [
   {
     title: 'LEADERSHIP',
     color: 'bg-purple-600',
-    teams: ['staff', 'elder', 'ministry', 'life-group']  // Specific order, not alphabetized
+    teams: ['staff', 'elder', 'ministry-leader', 'life-group']  // Specific order, not alphabetized
   },
   {
     title: 'RIVER PRESCHOOL',
@@ -75,7 +75,7 @@ const teamGroups = [
   {
     title: 'MINISTRIES',
     color: 'bg-green-600',
-    teams: ['care-ministry', 'celebrate-recovery', 'core', 'divorce-care', 'grief-share', 'kids', 'men', 'moms', 'next-steps', 'students', 'women']
+    teams: ['care', 'celebrate-recovery', 'core', 'divorce-care', 'grief-share', 'kids', 'men', 'moms', 'students', 'women']
   },
   {
     title: 'OPERATIONS',

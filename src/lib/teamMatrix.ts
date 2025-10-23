@@ -77,7 +77,7 @@ const DEFAULT_TEAM_REQUIREMENTS: Record<string, TeamRequirements> = {
     leadership: false,
     publicPresence: true
   },
-  'ministry': {
+  'ministry-leader': {
     backgroundCheck: true,
     references: true,
     childSafety: true,
@@ -373,7 +373,7 @@ const DEFAULT_TEAM_REQUIREMENTS: Record<string, TeamRequirements> = {
     leadership: false,
     publicPresence: false
   },
-  'care-ministry': {
+  'care': {
     backgroundCheck: false,
     references: false,
     childSafety: false,
@@ -442,20 +442,6 @@ const DEFAULT_TEAM_REQUIREMENTS: Record<string, TeamRequirements> = {
     discipleship: false,
     leadership: false,
     publicPresence: false
-  },
-  'next-steps': {
-    backgroundCheck: true,
-    references: true,
-    childSafety: true,
-    mandatedReporter: true,
-    welcomeToRCC: true,
-    membership: true,
-    lifeGroup: true,
-    covenant: false,
-    moralConduct: true,
-    discipleship: true,
-    leadership: true,
-    publicPresence: true
   },
   'core': {
     backgroundCheck: true,
