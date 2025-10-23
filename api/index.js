@@ -1124,9 +1124,8 @@ app.post('/api/admin/team-requirements', async (req, res) => {
       teams
     }
 
-    // Write to file
-    await fs.writeFile(configPath, JSON.stringify(configData, null, 2), 'utf8')
-
+    // Save to Redis instead of file system (Vercel serverless is read-only)
+    await setTeamRequirements(configData)
 
     res.json({
       success: true,
@@ -1140,29 +1139,21 @@ app.post('/api/admin/team-requirements', async (req, res) => {
   }
 })
 
-// Get team requirements (with overrides from config file)
+// Get team requirements (from Redis)
 app.get('/api/admin/team-requirements', async (req, res) => {
   try {
-    const fs = await import('fs/promises')
-    const path = await import('path')
-    const { fileURLToPath } = await import('url')
+    // Try to read from Redis
+    const configData = await getTeamRequirements()
 
-    // Get the directory of the current file
-    const __filename = fileURLToPath(import.meta.url)
-    const __dirname = path.dirname(__filename)
-    const configPath = path.join(__dirname, '..', 'data', 'teamRequirements.json')
-
-    // Try to read the config file
-    let configData = { teams: {} }
-    try {
-      const fileContent = await fs.readFile(configPath, 'utf8')
-      configData = JSON.parse(fileContent)
-    } catch (error) {
+    // If no data in Redis, return empty structure
+    if (!configData) {
+      return res.json({
+        teams: {},
+        lastUpdated: null,
+        updatedBy: null
+      })
     }
 
-    // Import the default requirements from the module
-    // Since this is server-side, we need to read the TypeScript file or have a separate JSON defaults file
-    // For now, return the config data (which will be empty initially)
     res.json({
       teams: configData.teams || {},
       lastUpdated: configData.lastUpdated,
@@ -1192,15 +1183,11 @@ app.get('/api/webhook/team-matrix', async (req, res) => {
     const defaultMatrixContent = await fs.readFile(defaultMatrixPath, 'utf8')
     const DEFAULT_TEAM_REQUIREMENTS = JSON.parse(defaultMatrixContent)
 
-    // Also load any custom overrides from the config file
-    const configPath = path.join(__dirname, '..', 'data', 'teamRequirements.json')
+    // Also load any custom overrides from Redis
     let customOverrides = {}
-    try {
-      const fileContent = await fs.readFile(configPath, 'utf8')
-      const configData = JSON.parse(fileContent)
+    const configData = await getTeamRequirements()
+    if (configData) {
       customOverrides = configData.teams || {}
-    } catch (error) {
-      // No custom overrides, that's fine
     }
 
     // Merge defaults with overrides

@@ -65,3 +65,16 @@ export async function deleteVolunteer(id) {
   const result = await client.del(`volunteer:${id}`)
   return result
 }
+
+// Store team requirements configuration
+export async function setTeamRequirements(config) {
+  const client = getRedis()
+  await client.set('team-requirements', JSON.stringify(config))
+}
+
+// Get team requirements configuration
+export async function getTeamRequirements() {
+  const client = getRedis()
+  const data = await client.get('team-requirements')
+  return data ? (typeof data === 'string' ? JSON.parse(data) : data) : null
+}
