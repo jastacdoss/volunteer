@@ -2281,10 +2281,10 @@ app.get('/api/onboarding-status/:personId', async (req, res) => {
   }
 
   try {
-    console.log(`[/api/onboarding-status] Checking status for person ${personId}`)
+    console.log(`[/api/onboarding-status] Fetching fresh data for person ${personId}`)
 
-    // Check if this person is in our volunteers cache
-    const volunteer = await getVolunteer(personId)
+    // Fetch fresh data from PCO and update cache
+    const volunteer = await syncSingleVolunteer(personId)
 
     if (!volunteer) {
       return res.status(404).json({
@@ -2293,6 +2293,8 @@ app.get('/api/onboarding-status/:personId', async (req, res) => {
         isOnboarding: false
       })
     }
+
+    console.log(`[/api/onboarding-status] Fresh data fetched for ${volunteer.name}`)
 
     // Get team requirements from storage
     const storedRequirements = await getTeamRequirements()
