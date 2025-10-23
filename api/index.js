@@ -2484,7 +2484,9 @@ app.get('/api/background-check/:personId', async (req, res) => {
       item => item.relationships?.field_definition?.data?.id === FIELD_IDS.declarationReviewed
     )
 
-    const declarationSubmitted = declarationSubmittedField?.attributes?.value === 'Yes'
+    // Declaration Submitted field returns a date string when submitted, null when not
+    // Declaration Reviewed field returns a date string when reviewed, null when not
+    const declarationSubmitted = !!declarationSubmittedField?.attributes?.value
     const declarationReviewed = !!declarationReviewedField?.attributes?.value
 
     // Parse background check data
