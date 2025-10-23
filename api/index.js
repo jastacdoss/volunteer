@@ -2235,6 +2235,12 @@ app.post('/api/admin/people-permissions', async (req, res) => {
     const token = authHeader.substring(7)
     const expectedToken = process.env.ADMIN_API_TOKEN || 'default-insecure-token'
 
+    // Debug logging
+    console.log(`[/api/admin/people-permissions] Token comparison:`)
+    console.log(`  Received token length: ${token.length}`)
+    console.log(`  Expected token length: ${expectedToken.length}`)
+    console.log(`  Tokens match: ${token === expectedToken}`)
+
     if (token !== expectedToken) {
       return res.status(403).json({ error: 'Forbidden - Invalid token' })
     }
