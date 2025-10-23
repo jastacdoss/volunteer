@@ -18,6 +18,25 @@ const teamRequirements = JSON.parse(
   readFileSync(join(__dirname, '../data/teamRequirements.json'), 'utf-8')
 )
 
+// Helper: Normalize team name from PCO to match our team keys
+// PCO stores display names like "Ministry Leader" or "Care Ministry"
+// We need to convert them to kebab-case keys like "ministry-leader" or "care"
+function normalizeTeamName(teamName) {
+  if (!teamName) return null
+
+  // Special case mappings for teams that were renamed
+  const specialCases = {
+    'care ministry': 'care',
+    'care-ministry': 'care'
+  }
+
+  // Normalize: lowercase and replace spaces with dashes
+  const normalized = teamName.toLowerCase().replace(/\s+/g, '-')
+
+  // Check for special cases
+  return specialCases[normalized] || normalized
+}
+
 // Helper: Get required fields for a volunteer based on their teams
 function getRequiredFields(teams) {
   const required = {
@@ -35,7 +54,8 @@ function getRequiredFields(teams) {
 
   // Union of all team requirements
   teams.forEach(team => {
-    const teamReqs = teamRequirements.teams[team.toLowerCase()]
+    const normalizedTeam = normalizeTeamName(team)
+    const teamReqs = teamRequirements.teams[normalizedTeam]
     if (teamReqs) {
       if (teamReqs.backgroundCheck) required.backgroundCheck = true
       if (teamReqs.references) required.references = true
@@ -61,7 +81,8 @@ function getRequiredFields(teams) {
 function getRequiredCovenantLevel(teams) {
   let maxLevel = 0
   teams.forEach(team => {
-    const teamReqs = teamRequirements.teams[team.toLowerCase()]
+    const normalizedTeam = normalizeTeamName(team)
+    const teamReqs = teamRequirements.teams[normalizedTeam]
     if (teamReqs) {
       if (teamReqs.publicPresence) maxLevel = Math.max(maxLevel, 3)
       else if (teamReqs.moralConduct) maxLevel = Math.max(maxLevel, 2)
