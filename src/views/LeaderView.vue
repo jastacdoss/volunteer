@@ -207,8 +207,8 @@ function getStatusIcon(status: FieldStatus) {
 }
 
 // Check if user is a leader
-async function checkLeaderStatus() {
-  console.log('[LeaderView] checkLeaderStatus called')
+async function checkLeaderStatus(forceRefresh = false) {
+  console.log('[LeaderView] checkLeaderStatus called (forceRefresh=' + forceRefresh + ')')
   const session = getSession()
   if (!session) {
     console.log('[LeaderView] No session, redirecting to /')
@@ -224,6 +224,14 @@ async function checkLeaderStatus() {
 
   try {
     console.log('[LeaderView] Checking leader status...')
+
+    // Clear cache if force refresh requested
+    if (forceRefresh) {
+      const { clearCachedPermissions } = await import('@/lib/auth')
+      clearCachedPermissions()
+      console.log('[LeaderView] Cleared permissions cache')
+    }
+
     // Use cached permissions (or fetch if not cached)
     const permissions = await checkPermissions()
 
@@ -254,6 +262,12 @@ async function checkLeaderStatus() {
   } finally {
     isLoading.value = false
   }
+}
+
+// Refresh teams and permissions
+async function refreshTeams() {
+  isLoading.value = true
+  await checkLeaderStatus(true)
 }
 
 // Load volunteers for selected team
@@ -572,7 +586,7 @@ onUnmounted(() => {
           <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
               <tr>
-                <th scope="col" class="sticky left-0 z-10 bg-gray-50 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-r border-gray-200" style="min-width: 280px;">
+                <th scope="col" class="sticky left-0 z-10 bg-gray-50 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-r border-gray-200" style="width: 280px;">
                   Name
                 </th>
                 <th scope="col" class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -606,7 +620,7 @@ onUnmounted(() => {
             <tbody class="bg-white divide-y divide-gray-200">
               <tr v-for="volunteer in volunteers" :key="volunteer.id" class="hover:bg-gray-50 transition-colors">
                 <!-- Name (Sticky) -->
-                <td class="sticky left-0 z-10 bg-white px-6 py-4 border-r border-gray-200" style="min-width: 280px;">
+                <td class="sticky left-0 z-10 bg-white px-6 py-4 border-r border-gray-200" style="width: 280px;">
                   <div class="flex items-center gap-3">
                     <img
                       v-if="volunteer.avatar"

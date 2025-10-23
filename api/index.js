@@ -1312,16 +1312,23 @@ app.get('/api/leader/check', async (req, res) => {
 
     const fieldDataResult = await fieldDataResponse.json()
 
-    // Find the Ministry/Team Leader field using hardcoded ID from FIELD_IDS
-    const leaderFieldData = fieldDataResult.data?.find(
+    // Find ALL Ministry/Team Leader field entries (multi-select fields have multiple FieldDatum entries)
+    const leaderFieldDataEntries = fieldDataResult.data?.filter(
       item => item.relationships?.field_definition?.data?.id === FIELD_IDS.ministryTeamLeader
-    )
+    ) || []
 
-    const ministries = leaderFieldData?.attributes?.value || null
+    // Collect all values from the field data entries
+    const ministries = leaderFieldDataEntries
+      .map(entry => entry.attributes?.value)
+      .filter(Boolean) // Remove null/undefined values
+
+    console.log('[/api/leader/check] Person ID:', personId)
+    console.log('[/api/leader/check] Found', leaderFieldDataEntries.length, 'Team Leader field entries')
+    console.log('[/api/leader/check] Ministries:', JSON.stringify(ministries))
 
     res.json({
-      isLeader: !!ministries,
-      ministries: ministries ? (Array.isArray(ministries) ? ministries : [ministries]) : []
+      isLeader: ministries.length > 0,
+      ministries: ministries
     })
   } catch (error) {
     console.error('[/api/leader/check] Error:', error)

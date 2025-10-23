@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getSession, checkPermissions } from '@/lib/auth'
-import { loadTeamRequirements, getTeamDisplayName } from '@/lib/teamMatrix'
+import { loadTeamRequirements, getTeamDisplayName, getTeamRequirements } from '@/lib/teamMatrix'
 import AppHeader from '@/components/AppHeader.vue'
 
 interface BackgroundCheck {
@@ -137,17 +137,100 @@ function getTeamRequiredColumns(teamVolunteers: Volunteer[]) {
   return required
 }
 
-// Check if any volunteer in team requires a field
-function isFieldRequired(teamVolunteers: Volunteer[], field: keyof typeof teamVolunteers[0]['requiredFields'] | 'covenant'): boolean {
-  return teamVolunteers.some(v => {
-    if (field === 'covenant') return v.covenantLevel > 0
-    return v.requiredFields[field]
-  })
+// Check if a field is required for a team based on current loaded team requirements
+function isFieldRequired(teamName: string, field: string): boolean {
+  const requirements = getTeamRequirements()
+  const teamReq = requirements[teamName.toLowerCase()]
+
+  if (!teamReq) return false
+
+  // Special handling for covenant - check if any covenant level is required
+  if (field === 'covenant') {
+    return teamReq.covenant || teamReq.moralConduct || teamReq.publicPresence
+  }
+
+  // Declaration is automatically required when backgroundCheck is required
+  if (field === 'declaration') {
+    return teamReq.backgroundCheck
+  }
+
+  return teamReq[field as keyof typeof teamReq] || false
 }
 
 // Get covenant level for team (max level across all volunteers)
 function getTeamCovenantLevel(teamVolunteers: Volunteer[]): number {
   return Math.max(...teamVolunteers.map(v => v.covenantLevel), 0)
+}
+
+// Calculate progress for a volunteer on a specific team based on current loaded team requirements
+// Declaration and BG Check are now counted as SEPARATE steps (not combined)
+function calculateTeamProgress(volunteer: Volunteer, teamName: string): { completed: number; total: number } {
+  const requirements = getTeamRequirements()
+  const teamReq = requirements[teamName.toLowerCase()]
+
+  if (!teamReq) {
+    return { completed: 0, total: 0 }
+  }
+
+  let completed = 0
+  let total = 0
+
+  // 1. Declaration (separate step)
+  if (teamReq.backgroundCheck) { // Declaration is required when BG check is required
+    total++
+    if (volunteer.fields.declaration) {
+      completed++
+    }
+  }
+
+  // 2. Background Check (separate step)
+  if (teamReq.backgroundCheck) {
+    total++
+    const bgComplete = volunteer.backgroundCheck &&
+                      (volunteer.backgroundCheck.status === 'complete_clear' ||
+                       volunteer.backgroundCheck.status === 'manual_clear')
+    if (bgComplete) {
+      completed++
+    }
+  }
+
+  // 3. References
+  if (teamReq.references) {
+    total++
+    if (volunteer.fields.references) {
+      completed++
+    }
+  }
+
+  // 4. Child Safety
+  if (teamReq.childSafety) {
+    total++
+    if (volunteer.fields.childSafety) {
+      completed++
+    }
+  }
+
+  // 5. Mandated Reporter
+  if (teamReq.mandatedReporter) {
+    total++
+    if (volunteer.fields.mandatedReporter) {
+      completed++
+    }
+  }
+
+  // 6. Covenant (check appropriate level based on team requirements)
+  const covenantLevel = teamReq.publicPresence ? 3 : teamReq.moralConduct ? 2 : teamReq.covenant ? 1 : 0
+  if (covenantLevel > 0) {
+    total++
+    const covenantComplete = (covenantLevel === 1 && volunteer.fields.covenantSigned) ||
+                            (covenantLevel === 2 && volunteer.fields.moralConduct) ||
+                            (covenantLevel === 3 && volunteer.fields.publicPresence)
+    if (covenantComplete) {
+      completed++
+    }
+  }
+
+  return { completed, total }
 }
 
 // Group volunteers by team
@@ -216,15 +299,18 @@ async function checkAdminStatus() {
 }
 
 // Load all volunteers with "Onboarding In Progress For"
-async function loadVolunteers() {
-  console.log('[AdminVolunteersView] loadVolunteers called')
+// silent: if true, updates data without showing loading spinner (for background polling)
+async function loadVolunteers(silent = false) {
+  console.log('[AdminVolunteersView] loadVolunteers called (silent=' + silent + ')')
   const session = getSession()
   if (!session) {
     console.log('[AdminVolunteersView] No session in loadVolunteers')
     return
   }
 
-  isLoading.value = true
+  if (!silent) {
+    isLoading.value = true
+  }
 
   try {
     console.log('[AdminVolunteersView] Fetching /api/admin/volunteers...')
@@ -246,7 +332,9 @@ async function loadVolunteers() {
   } catch (error) {
     console.error('[AdminVolunteersView] Failed to load volunteers:', error)
   } finally {
-    isLoading.value = false
+    if (!silent) {
+      isLoading.value = false
+    }
   }
 }
 
@@ -439,9 +527,9 @@ onMounted(async () => {
   await checkAdminStatus()
   await loadTeamRequirements()
 
-  // Poll for updates every 30 seconds
+  // Poll for updates every 30 seconds (silent mode - no loading spinner)
   pollingInterval = setInterval(() => {
-    loadVolunteers()
+    loadVolunteers(true)
   }, 30 * 1000)
 })
 
@@ -501,61 +589,61 @@ onUnmounted(() => {
               <thead class="bg-gray-50 border-b border-gray-200">
                 <tr>
                   <th rowspan="2" class="px-3 py-2 text-left font-semibold text-gray-700 border-r border-gray-300" style="width: 200px;">Name</th>
-                  <th :colspan="isFieldRequired(teamVolunteers, 'declaration') ? 2 : 1" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">Declaration</th>
-                  <th :colspan="isFieldRequired(teamVolunteers, 'backgroundCheck') ? 2 : 1" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">BG Check</th>
-                  <th :colspan="isFieldRequired(teamVolunteers, 'childSafety') ? 2 : 1" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">Child Safety</th>
-                  <th :colspan="isFieldRequired(teamVolunteers, 'mandatedReporter') ? 2 : 1" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">Mand. Rep.</th>
-                  <th :colspan="isFieldRequired(teamVolunteers, 'references') ? 2 : 1" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">References</th>
+                  <th colspan="2" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">Declaration</th>
+                  <th colspan="2" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">BG Check</th>
+                  <th colspan="2" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">Child Safety</th>
+                  <th colspan="2" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">Mand. Rep.</th>
+                  <th colspan="2" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">References</th>
                   <th class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 80px;">Covenant</th>
                   <th rowspan="2" class="px-3 py-2 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 120px;">Progress</th>
                   <th rowspan="2" class="px-2 py-2 text-center font-semibold text-gray-700" style="width: 80px;"></th>
                 </tr>
                 <tr class="text-xs text-gray-500">
                   <!-- Declaration sub-headers -->
-                  <template v-if="isFieldRequired(teamVolunteers, 'declaration')">
+                  <template v-if="isFieldRequired(team, 'declaration')">
                     <th class="px-1 py-1 border-r border-gray-200">Vol</th>
                     <th class="px-1 py-1 border-r border-gray-300">Admin</th>
                   </template>
                   <template v-else>
-                    <th class="px-1 py-1 border-r border-gray-300"></th>
+                    <th colspan="2" class="px-1 py-1 border-r border-gray-300 text-center italic">N/A</th>
                   </template>
 
                   <!-- BG Check sub-headers -->
-                  <template v-if="isFieldRequired(teamVolunteers, 'backgroundCheck')">
+                  <template v-if="isFieldRequired(team, 'backgroundCheck')">
                     <th class="px-1 py-1 border-r border-gray-200">Vol</th>
                     <th class="px-1 py-1 border-r border-gray-300">Admin</th>
                   </template>
                   <template v-else>
-                    <th class="px-1 py-1 border-r border-gray-300"></th>
+                    <th colspan="2" class="px-1 py-1 border-r border-gray-300 text-center italic">N/A</th>
                   </template>
 
                   <!-- W2RCC - no sub-header needed (rowspan=2 in first row) -->
 
                   <!-- Child Safety sub-headers -->
-                  <template v-if="isFieldRequired(teamVolunteers, 'childSafety')">
+                  <template v-if="isFieldRequired(team, 'childSafety')">
                     <th class="px-1 py-1 border-r border-gray-200">Vol</th>
                     <th class="px-1 py-1 border-r border-gray-300">Admin</th>
                   </template>
                   <template v-else>
-                    <th class="px-1 py-1 border-r border-gray-300"></th>
+                    <th colspan="2" class="px-1 py-1 border-r border-gray-300 text-center italic">N/A</th>
                   </template>
 
                   <!-- Mandated Reporter sub-headers -->
-                  <template v-if="isFieldRequired(teamVolunteers, 'mandatedReporter')">
+                  <template v-if="isFieldRequired(team, 'mandatedReporter')">
                     <th class="px-1 py-1 border-r border-gray-200">Vol</th>
                     <th class="px-1 py-1 border-r border-gray-300">Admin</th>
                   </template>
                   <template v-else>
-                    <th class="px-1 py-1 border-r border-gray-300"></th>
+                    <th colspan="2" class="px-1 py-1 border-r border-gray-300 text-center italic">N/A</th>
                   </template>
 
                   <!-- References sub-headers -->
-                  <template v-if="isFieldRequired(teamVolunteers, 'references')">
+                  <template v-if="isFieldRequired(team, 'references')">
                     <th class="px-1 py-1 border-r border-gray-200">Vol</th>
                     <th class="px-1 py-1 border-r border-gray-300">Admin</th>
                   </template>
                   <template v-else>
-                    <th class="px-1 py-1 border-r border-gray-300"></th>
+                    <th colspan="2" class="px-1 py-1 border-r border-gray-300 text-center italic">N/A</th>
                   </template>
 
                   <!-- Covenant sub-header -->
@@ -605,8 +693,8 @@ onUnmounted(() => {
                     </div>
                   </td>
 
-                  <!-- Declaration: Conditional VOL + ADMIN or single N/A -->
-                  <template v-if="isFieldRequired(teamVolunteers, 'declaration')">
+                  <!-- Declaration: Always 2 columns -->
+                  <template v-if="isFieldRequired(team, 'declaration')">
                     <!-- VOL column -->
                     <td class="px-2 py-1.5 text-center border-r border-gray-200">
                       <span v-if="!volunteer.fields.declarationSubmitted || volunteer.fields.declarationSubmitted === 'No'" class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-100">
@@ -624,7 +712,8 @@ onUnmounted(() => {
                     <td class="px-2 py-1.5 text-center border-r border-gray-300">
                       <input v-if="!volunteer.fields.declaration"
                              type="checkbox"
-                             class="w-4 h-4 cursor-pointer"
+                             class="w-4 h-4 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                             :disabled="!volunteer.fields.declarationSubmitted || volunteer.fields.declarationSubmitted === 'No'"
                              @change="setFieldDate(volunteer.id, 'Declaration Reviewed')">
                       <div v-else class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-green-100">
                         <svg class="w-3 h-3 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -633,12 +722,14 @@ onUnmounted(() => {
                       </div>
                     </td>
                   </template>
-                  <td v-else class="px-2 py-1.5 text-center border-r border-gray-300">
-                    <span class="text-gray-400 text-xs">N/A</span>
-                  </td>
+                  <template v-else>
+                    <td colspan="2" class="px-2 py-1.5 text-center border-r border-gray-300">
+                      <span class="text-gray-400 text-xs italic">N/A</span>
+                    </td>
+                  </template>
 
                   <!-- Background Check: Conditional VOL + ADMIN or single N/A -->
-                  <template v-if="isFieldRequired(teamVolunteers, 'backgroundCheck')">
+                  <template v-if="isFieldRequired(team, 'backgroundCheck')">
                     <!-- VOL column -->
                     <td class="px-2 py-1.5 text-center border-r border-gray-200">
                       <!-- Expired or No BG Check: Red exclamation triangle -->
@@ -689,12 +780,14 @@ onUnmounted(() => {
                       <span v-else class="text-gray-400 text-xs">-</span>
                     </td>
                   </template>
-                  <td v-else class="px-2 py-1.5 text-center border-r border-gray-300">
-                    <span class="text-gray-400 text-xs">N/A</span>
-                  </td>
+                  <template v-else>
+                    <td colspan="2" class="px-2 py-1.5 text-center border-r border-gray-300">
+                      <span class="text-gray-400 text-xs italic">N/A</span>
+                    </td>
+                  </template>
 
                   <!-- Child Safety: Conditional VOL + ADMIN or single N/A -->
-                  <template v-if="isFieldRequired(teamVolunteers, 'childSafety')">
+                  <template v-if="isFieldRequired(team, 'childSafety')">
                     <td class="px-2 py-1.5 text-center border-r border-gray-200">
                       <span v-if="!volunteer.fields.childSafetySubmitted || volunteer.fields.childSafetySubmitted === 'No'" class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-100">
                         <svg class="w-3 h-3 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
@@ -710,7 +803,8 @@ onUnmounted(() => {
                     <td class="px-2 py-1.5 text-center border-r border-gray-300">
                       <input v-if="!volunteer.fields.childSafety"
                              type="checkbox"
-                             class="w-4 h-4 cursor-pointer"
+                             class="w-4 h-4 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                             :disabled="!volunteer.fields.childSafetySubmitted || volunteer.fields.childSafetySubmitted === 'No'"
                              @change="setFieldDate(volunteer.id, 'Child Safety Training Last Completed')">
                       <div v-else class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-green-100">
                         <svg class="w-3 h-3 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -719,12 +813,14 @@ onUnmounted(() => {
                       </div>
                     </td>
                   </template>
-                  <td v-else class="px-2 py-1.5 text-center border-r border-gray-300">
-                    <span class="text-gray-400 text-xs">N/A</span>
-                  </td>
+                  <template v-else>
+                    <td colspan="2" class="px-2 py-1.5 text-center border-r border-gray-300">
+                      <span class="text-gray-400 text-xs italic">N/A</span>
+                    </td>
+                  </template>
 
                   <!-- Mandated Reporter: Conditional VOL + ADMIN or single N/A -->
-                  <template v-if="isFieldRequired(teamVolunteers, 'mandatedReporter')">
+                  <template v-if="isFieldRequired(team, 'mandatedReporter')">
                     <td class="px-2 py-1.5 text-center border-r border-gray-200">
                       <span v-if="!volunteer.fields.mandatedReporterSubmitted || volunteer.fields.mandatedReporterSubmitted === 'No'" class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-100">
                         <svg class="w-3 h-3 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
@@ -740,7 +836,8 @@ onUnmounted(() => {
                     <td class="px-2 py-1.5 text-center border-r border-gray-300">
                       <input v-if="!volunteer.fields.mandatedReporter"
                              type="checkbox"
-                             class="w-4 h-4 cursor-pointer"
+                             class="w-4 h-4 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                             :disabled="!volunteer.fields.mandatedReporterSubmitted || volunteer.fields.mandatedReporterSubmitted === 'No'"
                              @change="setFieldDate(volunteer.id, 'Mandated Reporter Training Last Completed')">
                       <div v-else class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-green-100">
                         <svg class="w-3 h-3 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -749,12 +846,14 @@ onUnmounted(() => {
                       </div>
                     </td>
                   </template>
-                  <td v-else class="px-2 py-1.5 text-center border-r border-gray-300">
-                    <span class="text-gray-400 text-xs">N/A</span>
-                  </td>
+                  <template v-else>
+                    <td colspan="2" class="px-2 py-1.5 text-center border-r border-gray-300">
+                      <span class="text-gray-400 text-xs italic">N/A</span>
+                    </td>
+                  </template>
 
                   <!-- References: Conditional VOL + ADMIN or single N/A -->
-                  <template v-if="isFieldRequired(teamVolunteers, 'references')">
+                  <template v-if="isFieldRequired(team, 'references')">
                     <td class="px-2 py-1.5 text-center border-r border-gray-200">
                       <span v-if="!volunteer.fields.referencesSubmitted || volunteer.fields.referencesSubmitted === 'No'" class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-yellow-100">
                         <svg class="w-3 h-3 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
@@ -770,7 +869,8 @@ onUnmounted(() => {
                     <td class="px-2 py-1.5 text-center border-r border-gray-300">
                       <input v-if="!volunteer.fields.references"
                              type="checkbox"
-                             class="w-4 h-4 cursor-pointer"
+                             class="w-4 h-4 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                             :disabled="!volunteer.fields.referencesSubmitted || volunteer.fields.referencesSubmitted === 'No'"
                              @change="setFieldDate(volunteer.id, 'References Checked')">
                       <div v-else class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-green-100">
                         <svg class="w-3 h-3 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -779,9 +879,11 @@ onUnmounted(() => {
                       </div>
                     </td>
                   </template>
-                  <td v-else class="px-2 py-1.5 text-center border-r border-gray-300">
-                    <span class="text-gray-400 text-xs">N/A</span>
-                  </td>
+                  <template v-else>
+                    <td colspan="2" class="px-2 py-1.5 text-center border-r border-gray-300">
+                      <span class="text-gray-400 text-xs italic">N/A</span>
+                    </td>
+                  </template>
 
                   <!-- Covenant (single column) -->
                   <td class="px-2 py-1.5 text-center border-r border-gray-300">
@@ -808,10 +910,10 @@ onUnmounted(() => {
                       <div class="flex-1 bg-gray-200 rounded-full h-2 min-w-[60px]">
                         <div
                           class="bg-green-500 h-2 rounded-full transition-all duration-300"
-                          :style="{ width: `${volunteer.progress.total > 0 ? (volunteer.progress.completed / volunteer.progress.total) * 100 : 0}%` }"
+                          :style="{ width: `${calculateTeamProgress(volunteer, team).total > 0 ? (calculateTeamProgress(volunteer, team).completed / calculateTeamProgress(volunteer, team).total) * 100 : 0}%` }"
                         ></div>
                       </div>
-                      <span class="text-xs text-gray-600 whitespace-nowrap">{{ volunteer.progress.completed }}/{{ volunteer.progress.total }}</span>
+                      <span class="text-xs text-gray-600 whitespace-nowrap">{{ calculateTeamProgress(volunteer, team).completed }}/{{ calculateTeamProgress(volunteer, team).total }}</span>
                     </div>
                   </td>
 
