@@ -239,9 +239,6 @@ const volunteersByTeam = computed(() => {
 
   volunteers.value.forEach(volunteer => {
     volunteer.teams.forEach(team => {
-      // Filter out "Ministry Leader" team
-      if (team.toLowerCase() === 'ministry leader') return
-
       if (!groups[team]) {
         groups[team] = []
       }
