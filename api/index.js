@@ -2503,12 +2503,19 @@ app.get('/api/background-check/:personId', async (req, res) => {
       }
     }
 
+    // Calculate if a new background check needs to be ordered
+    const declarationComplete = declarationSubmitted && declarationReviewed
+    const bgCheckNeedsOrdered = declarationComplete && (
+      !backgroundCheck ||
+      (backgroundCheck.status !== 'complete_clear' && backgroundCheck.status !== 'manual_clear')
+    )
+
     const response = {
       person_id: personId,
       declaration: {
         submitted: declarationSubmitted,
         reviewed: declarationReviewed,
-        complete: declarationSubmitted && declarationReviewed // Both must be true
+        complete: declarationComplete
       },
       background_check: backgroundCheck ? {
         status: backgroundCheck.status,
@@ -2520,7 +2527,8 @@ app.get('/api/background-check/:personId', async (req, res) => {
         completed_at: null,
         created_at: null,
         expires_on: null
-      }
+      },
+      bg_check_needs_ordered: bgCheckNeedsOrdered
     }
 
     res.json(response)
