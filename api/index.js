@@ -213,9 +213,13 @@ async function syncSingleVolunteer(personId) {
       return field?.attributes?.value || null
     }
 
-    // Get teams for this person
-    const teamsValue = getFieldValue(FIELD_IDS.onboardingInProgressFor)
-    const teams = Array.isArray(teamsValue) ? teamsValue : (teamsValue ? [teamsValue] : [])
+    // Get teams for this person - multi-select fields return multiple FieldDatum entries
+    const teamFieldEntries = allFieldData.filter(
+      item => item.relationships?.field_definition?.data?.id === FIELD_IDS.onboardingInProgressFor
+    )
+    const teams = teamFieldEntries
+      .map(entry => entry.attributes?.value)
+      .filter(Boolean) // Remove null/undefined values
 
     if (teams.length === 0) {
       console.log(`[Single Sync] Person ${personId} has no active onboarding teams, skipping`)
@@ -435,9 +439,13 @@ async function syncVolunteers() {
           return field?.attributes?.value || null
         }
 
-        // Get teams for this person
-        const teamsValue = getFieldValue(FIELD_IDS.onboardingInProgressFor)
-        const teams = Array.isArray(teamsValue) ? teamsValue : (teamsValue ? [teamsValue] : [])
+        // Get teams for this person - multi-select fields return multiple FieldDatum entries
+        const teamFieldEntries = allFieldData.filter(
+          item => item.relationships?.field_definition?.data?.id === FIELD_IDS.onboardingInProgressFor
+        )
+        const teams = teamFieldEntries
+          .map(entry => entry.attributes?.value)
+          .filter(Boolean) // Remove null/undefined values
 
         if (teams.length === 0) {
           return null
