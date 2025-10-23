@@ -2441,6 +2441,93 @@ app.get('/api/onboarding-status/:personId', async (req, res) => {
   }
 })
 
+// Quick background check status endpoint (for n8n integration)
+// No auth required - designed for webhook/automation use
+app.get('/api/background-check/:personId', async (req, res) => {
+  const { personId } = req.params
+
+  if (!personId) {
+    return res.status(400).json({ error: 'Person ID is required' })
+  }
+
+  const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+  try {
+    console.log(`[/api/background-check] Checking status for person ${personId}`)
+
+    // Fetch field data and background checks in parallel
+    const [fieldDataResponse, bgResponse] = await Promise.all([
+      makeRequest(
+        `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data?per_page=100`,
+        { headers: { Authorization: `Basic ${credentials}` } }
+      ),
+      makeRequest(
+        `https://api.planningcenteronline.com/people/v2/people/${personId}/background_checks`,
+        { headers: { Authorization: `Basic ${credentials}` } }
+      )
+    ])
+
+    if (!fieldDataResponse.ok) {
+      return res.status(404).json({
+        error: 'Person not found',
+        personId
+      })
+    }
+
+    const fieldDataResult = await fieldDataResponse.json()
+
+    // Get declaration fields
+    const declarationSubmittedField = fieldDataResult.data?.find(
+      item => item.relationships?.field_definition?.data?.id === FIELD_IDS.declarationSubmitted
+    )
+    const declarationReviewedField = fieldDataResult.data?.find(
+      item => item.relationships?.field_definition?.data?.id === FIELD_IDS.declarationReviewed
+    )
+
+    const declarationSubmitted = declarationSubmittedField?.attributes?.value === 'Yes'
+    const declarationReviewed = !!declarationReviewedField?.attributes?.value
+
+    // Parse background check data
+    let backgroundCheck = null
+    if (bgResponse.ok) {
+      const bgData = await bgResponse.json()
+      if (bgData.data && bgData.data.length > 0) {
+        // Find the current background check (marked as current: true), or fallback to first one
+        const currentBg = bgData.data.find(bg => bg.attributes?.current === true) || bgData.data[0]
+        backgroundCheck = {
+          status: currentBg.attributes?.status || 'unknown',
+          completedAt: currentBg.attributes?.completed_at || null,
+          createdAt: currentBg.attributes?.created_at || null,
+          expiresOn: currentBg.attributes?.expires_on || null
+        }
+      }
+    }
+
+    const response = {
+      personId,
+      declaration: {
+        submitted: declarationSubmitted,
+        reviewed: declarationReviewed,
+        complete: declarationReviewed // Reviewed means admin has checked it
+      },
+      backgroundCheck: backgroundCheck || {
+        status: 'not_started',
+        completedAt: null,
+        createdAt: null,
+        expiresOn: null
+      }
+    }
+
+    res.json(response)
+  } catch (error) {
+    console.error('[/api/background-check] Error:', error)
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    })
+  }
+})
+
 // For local development only (Vercel ignores this)
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
