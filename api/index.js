@@ -2271,6 +2271,166 @@ app.post('/api/admin/people-permissions', async (req, res) => {
   }
 })
 
+// Get onboarding status for a specific person (for n8n integration)
+// No auth required - designed for webhook/automation use
+app.get('/api/onboarding-status/:personId', async (req, res) => {
+  const { personId } = req.params
+
+  if (!personId) {
+    return res.status(400).json({ error: 'Person ID is required' })
+  }
+
+  try {
+    console.log(`[/api/onboarding-status] Checking status for person ${personId}`)
+
+    // Check if this person is in our volunteers cache
+    const volunteer = await getVolunteer(personId)
+
+    if (!volunteer) {
+      return res.status(404).json({
+        error: 'Person not found in onboarding system',
+        personId,
+        isOnboarding: false
+      })
+    }
+
+    // Get team requirements from storage
+    const storedRequirements = await getTeamRequirements()
+    const requirements = storedRequirements || teamRequirements
+
+    // Get the teams array - it's stored as 'teams' in the volunteer object
+    const teams = volunteer.teams || []
+
+    if (teams.length === 0) {
+      return res.status(404).json({
+        error: 'Person has no onboarding teams assigned',
+        personId,
+        isOnboarding: false
+      })
+    }
+
+    // Calculate status for each team they're onboarding for
+    const teamStatuses = teams.map(teamName => {
+      const teamReq = requirements.teams[teamName.toLowerCase()]
+
+      if (!teamReq) {
+        return {
+          team: teamName,
+          error: 'Team requirements not found'
+        }
+      }
+
+      // Calculate status for each required step
+      const steps = {}
+
+      // Declaration (if BG check required)
+      if (teamReq.backgroundCheck) {
+        steps.declaration = {
+          required: true,
+          volunteerSubmitted: volunteer.fields.declarationSubmitted === 'Yes',
+          adminReviewed: !!volunteer.fields.declaration,
+          complete: !!volunteer.fields.declaration
+        }
+      }
+
+      // Background Check
+      if (teamReq.backgroundCheck) {
+        const bgComplete = volunteer.backgroundCheck &&
+                          (volunteer.backgroundCheck.status === 'complete_clear' ||
+                           volunteer.backgroundCheck.status === 'manual_clear')
+        steps.backgroundCheck = {
+          required: true,
+          status: volunteer.backgroundCheck?.status || 'not_started',
+          complete: bgComplete
+        }
+      }
+
+      // References
+      if (teamReq.references) {
+        steps.references = {
+          required: true,
+          volunteerSubmitted: volunteer.fields.referencesSubmitted === 'Yes',
+          adminReviewed: !!volunteer.fields.references,
+          complete: !!volunteer.fields.references
+        }
+      }
+
+      // Child Safety
+      if (teamReq.childSafety) {
+        steps.childSafety = {
+          required: true,
+          volunteerSubmitted: volunteer.fields.childSafetySubmitted === 'Yes',
+          adminReviewed: !!volunteer.fields.childSafety,
+          complete: !!volunteer.fields.childSafety
+        }
+      }
+
+      // Mandated Reporter
+      if (teamReq.mandatedReporter) {
+        steps.mandatedReporter = {
+          required: true,
+          volunteerSubmitted: volunteer.fields.mandatedReporterSubmitted === 'Yes',
+          adminReviewed: !!volunteer.fields.mandatedReporter,
+          complete: !!volunteer.fields.mandatedReporter
+        }
+      }
+
+      // Covenant (check appropriate level)
+      const covenantLevel = teamReq.publicPresence ? 3 : teamReq.moralConduct ? 2 : teamReq.covenant ? 1 : 0
+      if (covenantLevel > 0) {
+        const covenantComplete = (covenantLevel === 1 && volunteer.fields.covenantSigned) ||
+                                 (covenantLevel === 2 && volunteer.fields.moralConduct) ||
+                                 (covenantLevel === 3 && volunteer.fields.publicPresence)
+        steps.covenant = {
+          required: true,
+          level: covenantLevel,
+          complete: !!covenantComplete
+        }
+      }
+
+      // Calculate overall progress
+      const totalSteps = Object.keys(steps).length
+      const completedSteps = Object.values(steps).filter(step => step.complete).length
+      const progressPercent = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0
+
+      return {
+        team: teamName,
+        steps,
+        progress: {
+          completed: completedSteps,
+          total: totalSteps,
+          percent: progressPercent
+        },
+        isComplete: completedSteps === totalSteps
+      }
+    })
+
+    // Overall status
+    const allComplete = teamStatuses.every(ts => ts.isComplete)
+    const anyComplete = teamStatuses.some(ts => ts.isComplete)
+
+    res.json({
+      personId,
+      name: volunteer.name,
+      avatar: volunteer.avatar,
+      isOnboarding: true,
+      teams: teams,
+      teamStatuses,
+      overallStatus: {
+        allTeamsComplete: allComplete,
+        anyTeamComplete: anyComplete,
+        teamsCount: teamStatuses.length
+      }
+    })
+  } catch (error) {
+    console.error('[/api/onboarding-status] Error:', error)
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    })
+  }
+})
+
 // For local development only (Vercel ignores this)
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
