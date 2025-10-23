@@ -2504,17 +2504,22 @@ app.get('/api/background-check/:personId', async (req, res) => {
     }
 
     const response = {
-      personId,
+      person_id: personId,
       declaration: {
         submitted: declarationSubmitted,
         reviewed: declarationReviewed,
-        complete: declarationReviewed // Reviewed means admin has checked it
+        complete: declarationSubmitted && declarationReviewed // Both must be true
       },
-      backgroundCheck: backgroundCheck || {
+      background_check: backgroundCheck ? {
+        status: backgroundCheck.status,
+        completed_at: backgroundCheck.completedAt,
+        created_at: backgroundCheck.createdAt,
+        expires_on: backgroundCheck.expiresOn
+      } : {
         status: 'not_started',
-        completedAt: null,
-        createdAt: null,
-        expiresOn: null
+        completed_at: null,
+        created_at: null,
+        expires_on: null
       }
     }
 
