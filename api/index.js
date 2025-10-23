@@ -2223,6 +2223,49 @@ app.get('/api/references/:personId', async (req, res) => {
   }
 })
 
+// Remove Viewer Permissions from PCO List (Admin only, for n8n integration)
+app.post('/api/admin/remove-viewer-permissions', async (req, res) => {
+  try {
+    // Verify admin authentication
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized - Bearer token required' })
+    }
+
+    const token = authHeader.substring(7)
+    const expectedToken = process.env.ADMIN_API_TOKEN || 'default-insecure-token'
+
+    if (token !== expectedToken) {
+      return res.status(403).json({ error: 'Forbidden - Invalid token' })
+    }
+
+    // Get parameters
+    const { listId = '4529147', dryRun = false } = req.body
+
+    console.log(`[/api/admin/remove-viewer-permissions] Starting - listId: ${listId}, dryRun: ${dryRun}`)
+
+    // Dynamically import the script function
+    const { removeViewerPermissions } = await import('../scripts/add-viewer-permissions.js')
+
+    // Execute the function
+    const results = await removeViewerPermissions(listId, dryRun)
+
+    console.log(`[/api/admin/remove-viewer-permissions] Completed - ${results.succeeded} succeeded, ${results.failed} failed`)
+
+    res.json({
+      success: true,
+      results
+    })
+  } catch (error) {
+    console.error('[/api/admin/remove-viewer-permissions] Error:', error)
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      details: error.message
+    })
+  }
+})
+
 // For local development only (Vercel ignores this)
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
