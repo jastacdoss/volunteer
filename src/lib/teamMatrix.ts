@@ -555,6 +555,7 @@ export async function loadTeamRequirements(): Promise<void> {
     }
 
     console.log('Team requirements loaded from API')
+    console.log('Connect team requirements:', TEAM_REQUIREMENTS.connect)
   } catch (error) {
     console.error('Error loading team requirements:', error)
     // Continue with defaults if API fails

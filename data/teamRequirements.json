@@ -116,9 +116,9 @@
     },
     "connect": {
       "backgroundCheck": true,
-      "references": true,
-      "childSafety": true,
-      "mandatedReporter": true,
+      "references": false,
+      "childSafety": false,
+      "mandatedReporter": false,
       "welcomeToRCC": true,
       "membership": true,
       "lifeGroup": false,
