@@ -2506,11 +2506,10 @@ app.get('/api/background-check/:personId', async (req, res) => {
     }
 
     // Calculate if a new background check needs to be ordered
+    // Only order if declaration is complete AND no background check exists yet
+    // If a background check exists (even in progress like 'needs_review'), don't order a new one
     const declarationComplete = declarationSubmitted && declarationReviewed
-    const bgCheckNeedsOrdered = declarationComplete && (
-      !backgroundCheck ||
-      (backgroundCheck.status !== 'complete_clear' && backgroundCheck.status !== 'manual_clear')
-    )
+    const bgCheckNeedsOrdered = declarationComplete && !backgroundCheck
 
     const response = {
       person_id: personId,
