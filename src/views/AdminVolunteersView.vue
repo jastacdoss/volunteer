@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getSession, checkPermissions } from '@/lib/auth'
-import { getTeamDisplayName } from '@/lib/teamMatrix'
+import { loadTeamRequirements, getTeamDisplayName } from '@/lib/teamMatrix'
 import AppHeader from '@/components/AppHeader.vue'
 
 interface BackgroundCheck {
@@ -437,6 +437,7 @@ let pollingInterval: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
   await checkAdminStatus()
+  await loadTeamRequirements()
 
   // Poll for updates every 30 seconds
   pollingInterval = setInterval(() => {
