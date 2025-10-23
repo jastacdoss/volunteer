@@ -2506,10 +2506,21 @@ app.get('/api/background-check/:personId', async (req, res) => {
     }
 
     // Calculate if a new background check needs to be ordered
-    // Only order if declaration is complete AND no background check exists yet
-    // If a background check exists (even in progress like 'needs_review'), don't order a new one
     const declarationComplete = declarationSubmitted && declarationReviewed
-    const bgCheckNeedsOrdered = declarationComplete && !backgroundCheck
+
+    // Check if background check expires within 45 days
+    let expiresWithin45Days = false
+    if (backgroundCheck?.expiresOn) {
+      const expiresDate = new Date(backgroundCheck.expiresOn)
+      const now = new Date()
+      const daysUntilExpiry = Math.floor((expiresDate - now) / (1000 * 60 * 60 * 24))
+      expiresWithin45Days = daysUntilExpiry <= 45
+    }
+
+    // Order if:
+    // 1. Declaration is complete AND no background check exists yet, OR
+    // 2. Declaration is complete AND background check expires within 45 days
+    const bgCheckNeedsOrdered = declarationComplete && (!backgroundCheck || expiresWithin45Days)
 
     const response = {
       person_id: personId,
