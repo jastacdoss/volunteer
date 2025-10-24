@@ -70,12 +70,12 @@ const teamGroups = [
   {
     title: 'SERVICE TEAMS',
     color: 'bg-blue-600',
-    teams: ['baptism', 'cafe', 'communion-team', 'connect', 'kids-check-in', 'parking', 'production', 'usher', 'worship']
+    teams: ['baptism', 'cafe', 'communion', 'connect', 'kids-check-in', 'online-services', 'parking', 'production', 'usher', 'worship']
   },
   {
     title: 'MINISTRIES',
     color: 'bg-green-600',
-    teams: ['care', 'celebrate-recovery', 'core', 'divorce-care', 'grief-share', 'kids', 'men', 'moms', 'students', 'women']
+    teams: ['care', 'celebrate-recovery', 'core', 'divorce-care', 'fpu', 'grief-share', 'kids', 'marriage', 'men', 'moms', 'outreach', 'reach-out', 'students', 'women']
   },
   {
     title: 'OPERATIONS',

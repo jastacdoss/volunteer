@@ -24,10 +24,14 @@ const teamRequirements = JSON.parse(
 function normalizeTeamName(teamName) {
   if (!teamName) return null
 
-  // Special case mappings for teams that were renamed
+  // Special case mappings for teams that were renamed or have special handling
   const specialCases = {
     'care ministry': 'care',
-    'care-ministry': 'care'
+    'care-ministry': 'care',
+    'communion team': 'communion',
+    'communion-team': 'communion',
+    'outreach and missions': 'outreach',
+    'outreach-and-missions': 'outreach'
   }
 
   // Normalize: lowercase and replace spaces with dashes
@@ -56,6 +60,7 @@ function getRequiredFields(teams) {
   teams.forEach(team => {
     const normalizedTeam = normalizeTeamName(team)
     const teamReqs = teamRequirements.teams[normalizedTeam]
+    console.log(`[Team Lookup] Original: "${team}" → Normalized: "${normalizedTeam}" → Found: ${!!teamReqs}`)
     if (teamReqs) {
       if (teamReqs.backgroundCheck) required.backgroundCheck = true
       if (teamReqs.references) required.references = true
@@ -74,6 +79,7 @@ function getRequiredFields(teams) {
     required.declaration = true
   }
 
+  console.log(`[Required Fields] For teams ${JSON.stringify(teams)}:`, required)
   return required
 }
 
@@ -241,6 +247,8 @@ async function syncSingleVolunteer(personId) {
     const teams = teamFieldEntries
       .map(entry => entry.attributes?.value)
       .filter(Boolean) // Remove null/undefined values
+
+    console.log(`[Single Sync] Person ${personId} (${personData.attributes?.name}) has teams:`, teams)
 
     if (teams.length === 0) {
       console.log(`[Single Sync] Person ${personId} has no active onboarding teams, skipping`)

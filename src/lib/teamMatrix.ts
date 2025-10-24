@@ -39,10 +39,14 @@ export interface RequiredSteps {
 function normalizeTeamName(teamName: string): string {
   if (!teamName) return ''
 
-  // Special case mappings for teams that were renamed
+  // Special case mappings for teams that were renamed or have special handling
   const specialCases: Record<string, string> = {
     'care ministry': 'care',
-    'care-ministry': 'care'
+    'care-ministry': 'care',
+    'communion team': 'communion',
+    'communion-team': 'communion',
+    'outreach and missions': 'outreach',
+    'outreach-and-missions': 'outreach'
   }
 
   // Normalize: lowercase and replace spaces with dashes
@@ -408,7 +412,7 @@ const DEFAULT_TEAM_REQUIREMENTS: Record<string, TeamRequirements> = {
     leadership: false,
     publicPresence: false
   },
-  'communion-team': {
+  'communion': {
     backgroundCheck: false,
     references: false,
     childSafety: false,
@@ -416,7 +420,7 @@ const DEFAULT_TEAM_REQUIREMENTS: Record<string, TeamRequirements> = {
     welcomeToRCC: false,
     membership: false,
     lifeGroup: true,
-    covenant: false,
+    covenant: true,
     moralConduct: false,
     discipleship: false,
     leadership: false,
@@ -533,6 +537,76 @@ const DEFAULT_TEAM_REQUIREMENTS: Record<string, TeamRequirements> = {
     discipleship: false,
     leadership: false,
     publicPresence: true
+  },
+  'outreach': {
+    backgroundCheck: false,
+    references: false,
+    childSafety: false,
+    mandatedReporter: false,
+    welcomeToRCC: false,
+    membership: false,
+    lifeGroup: false,
+    covenant: true,
+    moralConduct: false,
+    discipleship: false,
+    leadership: false,
+    publicPresence: false
+  },
+  'fpu': {
+    backgroundCheck: false,
+    references: false,
+    childSafety: false,
+    mandatedReporter: false,
+    welcomeToRCC: false,
+    membership: false,
+    lifeGroup: false,
+    covenant: true,
+    moralConduct: false,
+    discipleship: false,
+    leadership: false,
+    publicPresence: false
+  },
+  'marriage': {
+    backgroundCheck: false,
+    references: false,
+    childSafety: false,
+    mandatedReporter: false,
+    welcomeToRCC: false,
+    membership: false,
+    lifeGroup: false,
+    covenant: true,
+    moralConduct: false,
+    discipleship: false,
+    leadership: false,
+    publicPresence: false
+  },
+  'online-services': {
+    backgroundCheck: true,
+    references: true,
+    childSafety: true,
+    mandatedReporter: true,
+    welcomeToRCC: true,
+    membership: false,
+    lifeGroup: false,
+    covenant: false,
+    moralConduct: true,
+    discipleship: false,
+    leadership: false,
+    publicPresence: true
+  },
+  'reach-out': {
+    backgroundCheck: false,
+    references: false,
+    childSafety: false,
+    mandatedReporter: false,
+    welcomeToRCC: false,
+    membership: false,
+    lifeGroup: false,
+    covenant: true,
+    moralConduct: false,
+    discipleship: false,
+    leadership: false,
+    publicPresence: false
   }
 }
 
@@ -669,9 +743,20 @@ export function isValidTeam(teamName: string): boolean {
  * Get display name for a team (convert from kebab-case to Title Case)
  */
 export function getTeamDisplayName(teamKey: string): string {
-  if (teamKey === 'RPK') return 'RPK'
-  if (teamKey === 'staff') return 'Staff'
-  if (teamKey === 'e3-(thursday-night-kids)') return 'E3 (Thursday Night Kids)'
+  // Special case display names
+  const specialDisplayNames: Record<string, string> = {
+    'RPK': 'RPK',
+    'staff': 'Staff',
+    'e3-(thursday-night-kids)': 'E3 (Thursday Night Kids)',
+    'moms': 'MOMs',
+    'fpu': 'FPU',
+    'outreach': 'Outreach and Missions',
+    'kids-check-in': 'Kids Check-In'
+  }
+
+  if (specialDisplayNames[teamKey]) {
+    return specialDisplayNames[teamKey]
+  }
 
   return teamKey
     .split('-')

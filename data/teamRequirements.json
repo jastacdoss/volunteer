@@ -352,7 +352,7 @@
       "leadership": false,
       "publicPresence": false
     },
-    "communion-team": {
+    "communion": {
       "backgroundCheck": false,
       "references": false,
       "childSafety": false,
@@ -477,6 +477,76 @@
       "discipleship": false,
       "leadership": false,
       "publicPresence": true
+    },
+    "outreach": {
+      "backgroundCheck": false,
+      "references": false,
+      "childSafety": false,
+      "mandatedReporter": false,
+      "welcomeToRCC": false,
+      "membership": false,
+      "lifeGroup": false,
+      "covenant": true,
+      "moralConduct": false,
+      "discipleship": false,
+      "leadership": false,
+      "publicPresence": false
+    },
+    "fpu": {
+      "backgroundCheck": false,
+      "references": false,
+      "childSafety": false,
+      "mandatedReporter": false,
+      "welcomeToRCC": false,
+      "membership": false,
+      "lifeGroup": false,
+      "covenant": true,
+      "moralConduct": false,
+      "discipleship": false,
+      "leadership": false,
+      "publicPresence": false
+    },
+    "marriage": {
+      "backgroundCheck": false,
+      "references": false,
+      "childSafety": false,
+      "mandatedReporter": false,
+      "welcomeToRCC": false,
+      "membership": false,
+      "lifeGroup": false,
+      "covenant": true,
+      "moralConduct": false,
+      "discipleship": false,
+      "leadership": false,
+      "publicPresence": false
+    },
+    "online-services": {
+      "backgroundCheck": true,
+      "references": true,
+      "childSafety": true,
+      "mandatedReporter": true,
+      "welcomeToRCC": true,
+      "membership": false,
+      "lifeGroup": false,
+      "covenant": false,
+      "moralConduct": true,
+      "discipleship": false,
+      "leadership": false,
+      "publicPresence": true
+    },
+    "reach-out": {
+      "backgroundCheck": false,
+      "references": false,
+      "childSafety": false,
+      "mandatedReporter": false,
+      "welcomeToRCC": false,
+      "membership": false,
+      "lifeGroup": false,
+      "covenant": true,
+      "moralConduct": false,
+      "discipleship": false,
+      "leadership": false,
+      "publicPresence": false
     }
   }
 }

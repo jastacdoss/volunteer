@@ -67,6 +67,26 @@ const showCompleteModal = ref(false)
 const selectedVolunteer = ref<Volunteer | null>(null)
 const selectedTeam = ref<string>('')
 
+// Normalize team name to match storage format (kebab-case)
+function normalizeTeamName(teamName: string): string {
+  if (!teamName) return ''
+
+  // Special case mappings for teams that were renamed or have special handling
+  const specialCases: Record<string, string> = {
+    'care ministry': 'care',
+    'care-ministry': 'care',
+    'communion team': 'communion',
+    'communion-team': 'communion',
+    'outreach and missions': 'outreach',
+    'outreach-and-missions': 'outreach'
+  }
+
+  // Normalize: lowercase and replace spaces with dashes
+  const normalized = teamName.toLowerCase().replace(/\s+/g, '-')
+
+  return specialCases[normalized] || normalized
+}
+
 // Field status helpers
 type FieldStatus = 'empty' | 'pending_user' | 'pending_admin' | 'complete'
 
@@ -140,7 +160,8 @@ function getTeamRequiredColumns(teamVolunteers: Volunteer[]) {
 // Check if a field is required for a team based on current loaded team requirements
 function isFieldRequired(teamName: string, field: string): boolean {
   const requirements = getTeamRequirements()
-  const teamReq = requirements[teamName.toLowerCase()]
+  const normalizedTeam = normalizeTeamName(teamName)
+  const teamReq = requirements[normalizedTeam]
 
   if (!teamReq) return false
 
@@ -166,7 +187,8 @@ function getTeamCovenantLevel(teamVolunteers: Volunteer[]): number {
 // Declaration and BG Check are now counted as SEPARATE steps (not combined)
 function calculateTeamProgress(volunteer: Volunteer, teamName: string): { completed: number; total: number } {
   const requirements = getTeamRequirements()
-  const teamReq = requirements[teamName.toLowerCase()]
+  const normalizedTeam = normalizeTeamName(teamName)
+  const teamReq = requirements[normalizedTeam]
 
   if (!teamReq) {
     return { completed: 0, total: 0 }
