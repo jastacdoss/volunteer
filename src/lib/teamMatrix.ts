@@ -31,6 +31,27 @@ export interface RequiredSteps {
   leadership: boolean
 }
 
+/**
+ * Normalize team name from PCO display format to our internal key format
+ * PCO stores display names like "Ministry Leader" or "Care Ministry"
+ * We need to convert them to kebab-case keys like "ministry-leader" or "care"
+ */
+function normalizeTeamName(teamName: string): string {
+  if (!teamName) return ''
+
+  // Special case mappings for teams that were renamed
+  const specialCases: Record<string, string> = {
+    'care ministry': 'care',
+    'care-ministry': 'care'
+  }
+
+  // Normalize: lowercase and replace spaces with dashes
+  const normalized = teamName.toLowerCase().replace(/\s+/g, '-')
+
+  // Check for special cases
+  return specialCases[normalized] || normalized
+}
+
 // Default team requirements matrix - lowercase team names with dashes instead of spaces
 // These can be overridden by data/teamRequirements.json
 const DEFAULT_TEAM_REQUIREMENTS: Record<string, TeamRequirements> = {
@@ -563,7 +584,7 @@ export function getCovenantLevel(teams: string[]): 1 | 2 | 3 | null {
   let maxLevel: 1 | 2 | 3 | null = null
 
   for (const team of teams) {
-    const teamKey = team.toLowerCase().replace(/\s+/g, '-')
+    const teamKey = normalizeTeamName(team)
     const requirements = TEAM_REQUIREMENTS[teamKey]
 
     if (!requirements) continue
@@ -606,7 +627,7 @@ export function getRequiredSteps(
 
   // Get union of all active teams' requirements
   for (const team of activeTeams) {
-    const teamKey = team.toLowerCase().replace(/\s+/g, '-')
+    const teamKey = normalizeTeamName(team)
     const teamReqs = TEAM_REQUIREMENTS[teamKey]
 
     if (!teamReqs) continue
@@ -640,7 +661,7 @@ export function getRequiredSteps(
  * Check if a team name is valid
  */
 export function isValidTeam(teamName: string): boolean {
-  const teamKey = teamName.toLowerCase().replace(/\s+/g, '-')
+  const teamKey = normalizeTeamName(teamName)
   return teamKey in TEAM_REQUIREMENTS
 }
 
