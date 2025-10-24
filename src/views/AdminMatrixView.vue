@@ -12,6 +12,7 @@ interface TeamRow {
 
 const isLoading = ref(true)
 const isAdmin = ref(false)
+const isSyncing = ref(false)
 const teamData = ref<TeamRow[]>([])
 const searchQuery = ref('')
 const categoryFilter = ref<string>('all')
@@ -233,6 +234,34 @@ async function loadTeamData() {
   }
 }
 
+// Sync volunteers from PCO to Redis cache
+async function syncVolunteers() {
+  const session = getSession()
+  if (!session) return
+
+  isSyncing.value = true
+
+  try {
+    const response = await fetch('/api/admin/volunteers/sync', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${session.token}`,
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error('Failed to sync volunteers')
+    }
+
+    const result = await response.json()
+    console.log('Sync result:', result)
+  } catch (error) {
+    console.error('Failed to sync volunteers:', error)
+  } finally {
+    isSyncing.value = false
+  }
+}
+
 // Check if user is admin (uses cache)
 async function checkAdminStatus() {
   try {
@@ -291,6 +320,13 @@ onMounted(async () => {
     <!-- Header with Sub-Navigation -->
     <AppHeader title="Admin" :showAdminSubNav="true">
       <template #admin-actions>
+        <button
+          @click="syncVolunteers"
+          :disabled="isSyncing"
+          class="px-3 py-1.5 text-sm font-medium text-green-600 hover:text-green-700 hover:bg-green-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {{ isSyncing ? 'Syncing...' : 'Refresh' }}
+        </button>
         <button
           v-if="hasChanges"
           @click="resetChanges"
