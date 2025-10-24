@@ -70,17 +70,17 @@ const teamGroups = [
   {
     title: 'SERVICE TEAMS',
     color: 'bg-blue-600',
-    teams: ['baptism', 'cafe', 'communion', 'connect', 'kids-check-in', 'online-services', 'parking', 'production', 'usher', 'worship']
+    teams: ['baptism', 'cafe', 'communion', 'connect', 'counting', 'kids-check-in', 'online-services', 'parking', 'production', 'reach-out', 'usher', 'worship']
   },
   {
     title: 'MINISTRIES',
     color: 'bg-green-600',
-    teams: ['care', 'celebrate-recovery', 'core', 'divorce-care', 'fpu', 'grief-share', 'kids', 'marriage', 'men', 'moms', 'outreach', 'reach-out', 'students', 'women']
+    teams: ['care', 'celebrate-recovery', 'core', 'divorce-care', 'fpu', 'grief-share', 'kids', 'marriage', 'men', 'moms', 'outreach', 'students', 'women']
   },
   {
     title: 'OPERATIONS',
     color: 'bg-gray-600',
-    teams: ['counting', 'finance', 'maintenance']
+    teams: ['finance', 'maintenance']
   }
 ]
 
