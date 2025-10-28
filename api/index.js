@@ -98,6 +98,75 @@ function getRequiredCovenantLevel(teams) {
   return maxLevel
 }
 
+// Helper: Check if user is admin or leader for a specific team
+// Returns { isAuthorized: boolean, isAdmin: boolean, leaderTeams: string[] }
+async function checkAdminOrLeader(accessToken, requiredTeam = null) {
+  const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+  // Get user data to check if they're an admin
+  const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!userResponse.ok) {
+    return { isAuthorized: false, isAdmin: false, leaderTeams: [] }
+  }
+
+  const userData = await userResponse.json()
+  const personId = userData.data.id
+  const isSiteAdmin = userData.data.attributes?.site_administrator === true
+  const peoplePermissions = userData.data.attributes?.people_permissions || ''
+  const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+  const isAdmin = isSiteAdmin || isPeopleAdmin
+
+  // If they're an admin, they're authorized for everything
+  if (isAdmin) {
+    return { isAuthorized: true, isAdmin: true, leaderTeams: [] }
+  }
+
+  // Check if they're a leader
+  const fieldDataResponse = await fetch(
+    `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data?per_page=100`,
+    {
+      headers: {
+        Authorization: `Basic ${credentials}`,
+      },
+    }
+  )
+
+  if (!fieldDataResponse.ok) {
+    return { isAuthorized: false, isAdmin: false, leaderTeams: [] }
+  }
+
+  const fieldDataResult = await fieldDataResponse.json()
+
+  // Find ALL Ministry/Team Leader field entries (multi-select fields have multiple FieldDatum entries)
+  const leaderFieldDataEntries = fieldDataResult.data?.filter(
+    item => item.relationships?.field_definition?.data?.id === FIELD_IDS.ministryTeamLeader
+  ) || []
+
+  // Collect all values from the field data entries and normalize them
+  const leaderTeams = leaderFieldDataEntries
+    .map(entry => entry.attributes?.value)
+    .filter(Boolean)
+    .map(team => normalizeTeamName(team))
+
+  console.log('[checkAdminOrLeader] Person ID:', personId, 'Leader teams:', leaderTeams)
+
+  // If no specific team is required, just check if they're a leader of ANY team
+  if (!requiredTeam) {
+    return { isAuthorized: leaderTeams.length > 0, isAdmin: false, leaderTeams }
+  }
+
+  // Check if they're a leader for the required team
+  const normalizedRequiredTeam = normalizeTeamName(requiredTeam)
+  const isAuthorized = leaderTeams.includes(normalizedRequiredTeam)
+
+  return { isAuthorized, isAdmin: false, leaderTeams }
+}
+
 // Helper: Calculate progress for a volunteer
 // Only counts: Declaration/BG Check (1), References (2), Child Safety (3), Mandated Reporter (4), Covenant (5)
 // Max 5 (Kids team with all required) - Min 1 (Usher with only Covenant)
@@ -1589,7 +1658,7 @@ app.get('/api/admin/volunteers', async (req, res) => {
   }
 })
 
-// Toggle review status (admin only) - Stores date instead of Yes/No
+// Toggle review status (admin or team leader) - Stores date instead of Yes/No
 app.post('/api/admin/toggle-review', async (req, res) => {
   const authHeader = req.headers.authorization
   const accessToken = authHeader?.replace('Bearer ', '')
@@ -1600,25 +1669,26 @@ app.post('/api/admin/toggle-review', async (req, res) => {
   }
 
   try {
-    // Verify user is admin
-    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    })
+    // Get volunteer's teams from cache to check authorization
+    const volunteer = await getVolunteer(personId)
+    const volunteerTeams = volunteer?.teams || []
 
-    if (!userResponse.ok) {
-      return res.status(500).json({ error: 'Failed to fetch user data' })
+    // Check if user is admin or leader for any of the volunteer's teams
+    const authCheck = await checkAdminOrLeader(accessToken)
+
+    if (!authCheck.isAuthorized) {
+      return res.status(403).json({ error: 'Admin or team leader access required' })
     }
 
-    const userData = await userResponse.json()
-    const isSiteAdmin = userData.data.attributes?.site_administrator === true
-    const peoplePermissions = userData.data.attributes?.people_permissions || ''
-    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
-    const isAdmin = isSiteAdmin || isPeopleAdmin
+    // If user is a leader (not admin), verify they lead at least one of the volunteer's teams
+    if (!authCheck.isAdmin) {
+      const hasCommonTeam = volunteerTeams.some(team =>
+        authCheck.leaderTeams.includes(normalizeTeamName(team))
+      )
 
-    if (!isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' })
+      if (!hasCommonTeam) {
+        return res.status(403).json({ error: 'You can only manage volunteers on your teams' })
+      }
     }
 
     const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
@@ -1783,7 +1853,7 @@ app.post('/api/admin/toggle-review', async (req, res) => {
   }
 })
 
-// Set field date (admin only) - Sets a specific date for date fields
+// Set field date (admin or team leader) - Sets a specific date for date fields
 app.post('/api/admin/set-field-date', async (req, res) => {
   const authHeader = req.headers.authorization
   const accessToken = authHeader?.replace('Bearer ', '')
@@ -1794,25 +1864,26 @@ app.post('/api/admin/set-field-date', async (req, res) => {
   }
 
   try {
-    // Verify user is admin
-    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    })
+    // Get volunteer's teams from cache to check authorization
+    const volunteer = await getVolunteer(personId)
+    const volunteerTeams = volunteer?.teams || []
 
-    if (!userResponse.ok) {
-      return res.status(500).json({ error: 'Failed to fetch user data' })
+    // Check if user is admin or leader for any of the volunteer's teams
+    const authCheck = await checkAdminOrLeader(accessToken)
+
+    if (!authCheck.isAuthorized) {
+      return res.status(403).json({ error: 'Admin or team leader access required' })
     }
 
-    const userData = await userResponse.json()
-    const isSiteAdmin = userData.data.attributes?.site_administrator === true
-    const peoplePermissions = userData.data.attributes?.people_permissions || ''
-    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
-    const isAdmin = isSiteAdmin || isPeopleAdmin
+    // If user is a leader (not admin), verify they lead at least one of the volunteer's teams
+    if (!authCheck.isAdmin) {
+      const hasCommonTeam = volunteerTeams.some(team =>
+        authCheck.leaderTeams.includes(normalizeTeamName(team))
+      )
 
-    if (!isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' })
+      if (!hasCommonTeam) {
+        return res.status(403).json({ error: 'You can only manage volunteers on your teams' })
+      }
     }
 
     const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
@@ -1924,7 +1995,7 @@ app.post('/api/admin/set-field-date', async (req, res) => {
   }
 })
 
-// Mark volunteer onboarding as complete for a team (admin only)
+// Mark volunteer onboarding as complete for a team (admin or team leader)
 app.post('/api/admin/complete-onboarding', async (req, res) => {
   const authHeader = req.headers.authorization
   const accessToken = authHeader?.replace('Bearer ', '')
@@ -1935,25 +2006,11 @@ app.post('/api/admin/complete-onboarding', async (req, res) => {
   }
 
   try {
-    // Verify user is admin
-    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    })
+    // Verify user is admin or leader for this team
+    const authCheck = await checkAdminOrLeader(accessToken, team)
 
-    if (!userResponse.ok) {
-      return res.status(500).json({ error: 'Failed to fetch user data' })
-    }
-
-    const userData = await userResponse.json()
-    const isSiteAdmin = userData.data.attributes?.site_administrator === true
-    const peoplePermissions = userData.data.attributes?.people_permissions || ''
-    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
-    const isAdmin = isSiteAdmin || isPeopleAdmin
-
-    if (!isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' })
+    if (!authCheck.isAuthorized) {
+      return res.status(403).json({ error: 'Admin or team leader access required' })
     }
 
     const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
