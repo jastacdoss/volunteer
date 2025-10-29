@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { getSession, checkPermissions } from '@/lib/auth'
+import { getSession, checkPermissions, setViewAsMode } from '@/lib/auth'
 import { loadTeamRequirements, getTeamDisplayName, getTeamRequirements } from '@/lib/teamMatrix'
 import AppHeader from '@/components/AppHeader.vue'
 
@@ -44,6 +44,8 @@ interface RequiredFields {
 interface Volunteer {
   id: string
   name: string
+  firstName: string
+  lastName: string
   email: string
   avatar: string
   teams: string[]
@@ -66,6 +68,8 @@ const volunteers = ref<Volunteer[]>([])
 const showCompleteModal = ref(false)
 const selectedVolunteer = ref<Volunteer | null>(null)
 const selectedTeam = ref<string>('')
+const showViewAsModal = ref(false)
+const viewAsVolunteer = ref<Volunteer | null>(null)
 
 // Normalize team name to match storage format (kebab-case)
 function normalizeTeamName(teamName: string): string {
@@ -268,13 +272,18 @@ const volunteersByTeam = computed(() => {
     })
   })
 
-  // Sort teams alphabetically
+  // Sort teams alphabetically and sort volunteers by last name within each team
   return Object.keys(groups)
     .sort()
     .reduce((acc, team) => {
       const teamVolunteers = groups[team]
       if (teamVolunteers) {
-        acc[team] = teamVolunteers
+        // Sort volunteers by last name (or full name as fallback)
+        acc[team] = teamVolunteers.sort((a, b) => {
+          const aName = a.lastName || a.name
+          const bName = b.lastName || b.name
+          return aName.localeCompare(bName)
+        })
       }
       return acc
     }, {} as Record<string, Volunteer[]>)
@@ -508,6 +517,23 @@ async function markComplete() {
   }
 }
 
+// Show View As confirmation modal
+function showViewAs(volunteer: Volunteer) {
+  viewAsVolunteer.value = volunteer
+  showViewAsModal.value = true
+}
+
+// Activate View As mode and navigate to home page
+function activateViewAs() {
+  if (!viewAsVolunteer.value) return
+
+  // Set view as mode in sessionStorage
+  setViewAsMode(viewAsVolunteer.value.id, viewAsVolunteer.value.name)
+
+  // Navigate to home page
+  router.push('/')
+}
+
 // Sync volunteers from PCO to Redis cache
 async function syncVolunteers() {
   const session = getSession()
@@ -607,7 +633,7 @@ onUnmounted(() => {
             <table class="w-full text-sm">
               <thead class="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  <th rowspan="2" class="px-3 py-2 text-left font-semibold text-gray-700 border-r border-gray-300" style="width: 200px;">Name</th>
+                  <th rowspan="2" class="px-3 py-2 text-left font-semibold text-gray-700 border-r border-gray-300" style="width: 270px;">Name</th>
                   <th colspan="2" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">Declaration</th>
                   <th colspan="2" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">BG Check</th>
                   <th colspan="2" class="px-2 py-1 text-center font-semibold text-gray-700 border-r border-gray-300" style="width: 100px;">Child Safety</th>
@@ -679,36 +705,51 @@ onUnmounted(() => {
                 >
                   <!-- Name -->
                   <td class="px-3 py-1.5 border-r border-gray-300">
-                    <div class="flex items-center gap-2">
-                      <img
-                        v-if="volunteer.avatar"
-                        :src="volunteer.avatar"
-                        :alt="volunteer.name"
-                        class="w-6 h-6 rounded-full object-cover"
-                      >
-                      <div
-                        v-else
-                        class="w-6 h-6 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white font-bold text-xs"
-                      >
-                        {{ volunteer.name.charAt(0).toUpperCase() }}
+                    <div class="flex items-center justify-between gap-2">
+                      <div class="flex items-center gap-2">
+                        <img
+                          v-if="volunteer.avatar"
+                          :src="volunteer.avatar"
+                          :alt="volunteer.name"
+                          class="w-6 h-6 rounded-full object-cover"
+                        >
+                        <div
+                          v-else
+                          class="w-6 h-6 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white font-bold text-xs"
+                        >
+                          {{ volunteer.lastName?.charAt(0).toUpperCase() || volunteer.name.charAt(0).toUpperCase() }}
+                        </div>
+                        <router-link
+                          :to="`/leader/volunteer/${volunteer.id}`"
+                          class="font-medium text-gray-900 hover:text-blue-600 hover:underline transition-colors"
+                        >
+                          {{ volunteer.lastName && volunteer.firstName ? `${volunteer.lastName}, ${volunteer.firstName}` : volunteer.name }}
+                        </router-link>
                       </div>
-                      <router-link
-                        :to="`/leader/volunteer/${volunteer.id}`"
-                        class="font-medium text-gray-900 hover:text-blue-600 hover:underline transition-colors"
-                      >
-                        {{ volunteer.name }}
-                      </router-link>
-                      <a
-                        :href="`https://people.planningcenteronline.com/people/${volunteer.id}`"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        class="text-gray-400 hover:text-blue-600 transition-colors"
-                        title="Open in Planning Center"
-                      >
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
-                        </svg>
-                      </a>
+                      <div class="flex items-center gap-2">
+                        <a
+                          :href="`https://people.planningcenteronline.com/people/${volunteer.id}`"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="text-gray-400 hover:text-blue-600 transition-colors"
+                          title="Open in Planning Center"
+                        >
+                          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                          </svg>
+                        </a>
+                        <button
+                          v-if="isAdmin"
+                          @click="showViewAs(volunteer)"
+                          class="text-gray-400 hover:text-purple-600 transition-colors"
+                          title="View as this volunteer"
+                        >
+                          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                          </svg>
+                        </button>
+                      </div>
                     </div>
                   </td>
 
@@ -989,6 +1030,35 @@ onUnmounted(() => {
             class="px-4 py-2 text-sm font-medium bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
           >
             Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- View As Modal -->
+    <div
+      v-if="showViewAsModal"
+      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+      @click.self="showViewAsModal = false"
+    >
+      <div class="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+        <h3 class="text-xl font-bold text-gray-900 mb-4">View As Volunteer?</h3>
+        <p class="text-gray-700 mb-6">
+          You will see the volunteer portal exactly as <strong>{{ viewAsVolunteer?.name }}</strong> sees it.
+          A banner will appear at the top of the page to indicate you're in "View As" mode.
+        </p>
+        <div class="flex gap-3 justify-end">
+          <button
+            @click="showViewAsModal = false"
+            class="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            @click="activateViewAs"
+            class="px-4 py-2 text-sm font-medium bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors"
+          >
+            View As {{ viewAsVolunteer?.name }}
           </button>
         </div>
       </div>

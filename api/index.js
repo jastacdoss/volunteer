@@ -349,6 +349,8 @@ async function syncSingleVolunteer(personId) {
     const volunteer = {
       id: personId,
       name: personData.attributes?.name || '',
+      firstName: personData.attributes?.first_name || '',
+      lastName: personData.attributes?.last_name || '',
       email,
       phone,
       avatar: personData.attributes?.avatar || '',
@@ -574,6 +576,8 @@ async function syncVolunteers() {
         return {
           id: personId,
           name: personData.attributes?.name || '',
+          firstName: personData.attributes?.first_name || '',
+          lastName: personData.attributes?.last_name || '',
           email,
           phone,
           avatar: personData.attributes?.avatar || '',
@@ -906,6 +910,110 @@ app.get('/api/person/background-checks', async (req, res) => {
       }
     } else {
       return res.status(500).json({ error: 'Server not configured for background check access' })
+    }
+  } catch (error) {
+    console.error('Background check error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// View As: Get person data as if logged in as them (admin only)
+app.get('/api/admin/view-as/:personId', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+  const { personId } = req.params
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  try {
+    // Verify user is admin
+    const authCheck = await checkAdminOrLeader(accessToken)
+    if (!authCheck.isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    // Fetch person data using system credentials
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+    const personResponse = await fetch(
+      `https://api.planningcenteronline.com/people/v2/people/${personId}`,
+      {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      }
+    )
+
+    if (!personResponse.ok) {
+      return res.status(404).json({ error: 'Person not found' })
+    }
+
+    const userData = await personResponse.json()
+
+    // Fetch field data with field definitions
+    const fieldDataResponse = await fetch(
+      `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data?include=field_definition&per_page=100`,
+      {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      }
+    )
+
+    if (fieldDataResponse.ok) {
+      const fieldDataResult = await fieldDataResponse.json()
+
+      // Merge field data into userData (same format as /api/user/refresh)
+      userData.included = fieldDataResult.included || []
+      userData.data.relationships = userData.data.relationships || {}
+      userData.data.relationships.field_data = {
+        data: fieldDataResult.data || []
+      }
+    }
+
+    return res.json(userData)
+  } catch (error) {
+    console.error('View As error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+// View As: Get background checks for a person (admin only)
+app.get('/api/admin/background-checks/:personId', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+  const { personId } = req.params
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  try {
+    // Verify user is admin
+    const authCheck = await checkAdminOrLeader(accessToken)
+    if (!authCheck.isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    // Fetch background checks using system credentials
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+    const bgResponse = await makeRequest(
+      `https://api.planningcenteronline.com/people/v2/people/${personId}/background_checks`,
+      {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      }
+    )
+
+    if (bgResponse.ok) {
+      const bgData = await bgResponse.json()
+      return res.json(bgData)
+    } else {
+      return res.status(500).json({ error: 'Failed to fetch background checks' })
     }
   } catch (error) {
     console.error('Background check error:', error)
@@ -1465,6 +1573,13 @@ app.get('/api/leader/volunteers/:team', async (req, res) => {
     const teamVolunteers = allVolunteers.filter(volunteer =>
       volunteer.teams && volunteer.teams.includes(team)
     )
+
+    // Sort volunteers by last name (or full name as fallback)
+    teamVolunteers.sort((a, b) => {
+      const aName = a.lastName || a.name
+      const bName = b.lastName || b.name
+      return aName.localeCompare(bName)
+    })
 
     res.json({ volunteers: teamVolunteers })
   } catch (error) {

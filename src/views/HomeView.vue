@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { getSession, initiateLogin, logout, refreshUserData } from '@/lib/auth'
+import { getSession, initiateLogin, logout, refreshUserData, getViewAsMode } from '@/lib/auth'
 import { loadTeamRequirements, getRequiredSteps, getCovenantLevel, getTeamDisplayName, type RequiredSteps } from '@/lib/teamMatrix'
 import OnboardingSteps from '@/components/OnboardingSteps.vue'
 import AdditionalRequirements from '@/components/AdditionalRequirements.vue'
@@ -556,9 +556,27 @@ async function loadUserData() {
       return
     }
 
-    // Refresh user data to get latest field information
-    const freshData = await refreshUserData()
-    const userData = freshData || session.user
+    // Check if in View As mode
+    const viewAsMode = getViewAsMode()
+    let userData: any
+
+    if (viewAsMode) {
+      // Fetch data for the volunteer we're viewing as (admin only)
+      console.log('[View As] Loading data for:', viewAsMode.personName, viewAsMode.personId)
+      const response = await fetch(`/api/admin/view-as/${viewAsMode.personId}`, {
+        headers: {
+          'Authorization': `Bearer ${session.token}`,
+        },
+      })
+      if (!response.ok) {
+        throw new Error('Failed to fetch volunteer data in View As mode')
+      }
+      userData = await response.json()
+    } else {
+      // Refresh user data to get latest field information
+      const freshData = await refreshUserData()
+      userData = freshData || session.user
+    }
 
     // Extract user name from PCO data
     personData.value = userData.data
@@ -588,7 +606,11 @@ async function loadUserData() {
 
     // Fetch background checks
     try {
-      const bgResponse = await fetch(`/api/person/background-checks`, {
+      const bgEndpoint = viewAsMode
+        ? `/api/admin/background-checks/${viewAsMode.personId}`
+        : `/api/person/background-checks`
+
+      const bgResponse = await fetch(bgEndpoint, {
         headers: {
           'Authorization': `Bearer ${session.token}`,
         },

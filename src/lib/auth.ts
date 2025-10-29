@@ -180,3 +180,30 @@ export async function checkPermissions(): Promise<CachedPermissions> {
     throw error
   }
 }
+
+// View As functionality for admins
+interface ViewAsMode {
+  personId: string
+  personName: string
+}
+
+export function setViewAsMode(personId: string, personName: string) {
+  sessionStorage.setItem('view_as_person_id', personId)
+  sessionStorage.setItem('view_as_person_name', personName)
+  console.log('[View As] Enabled for:', personName, personId)
+}
+
+export function getViewAsMode(): ViewAsMode | null {
+  const personId = sessionStorage.getItem('view_as_person_id')
+  const personName = sessionStorage.getItem('view_as_person_name')
+
+  if (!personId || !personName) return null
+
+  return { personId, personName }
+}
+
+export function clearViewAsMode() {
+  sessionStorage.removeItem('view_as_person_id')
+  sessionStorage.removeItem('view_as_person_name')
+  console.log('[View As] Mode cleared')
+}

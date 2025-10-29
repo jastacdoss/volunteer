@@ -44,6 +44,8 @@ interface RequiredFields {
 interface Volunteer {
   id: string
   name: string
+  firstName: string
+  lastName: string
   email: string
   phone?: string
   avatar: string
@@ -632,11 +634,11 @@ onUnmounted(() => {
                       v-else
                       class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center text-white font-bold flex-shrink-0"
                     >
-                      {{ volunteer.name.charAt(0).toUpperCase() }}
+                      {{ volunteer.lastName?.charAt(0).toUpperCase() || volunteer.name.charAt(0).toUpperCase() }}
                     </div>
                     <div class="min-w-0 flex-1">
                       <div class="flex items-center gap-2">
-                        <span class="text-sm font-medium text-gray-900">{{ volunteer.name }}</span>
+                        <span class="text-sm font-medium text-gray-900">{{ volunteer.lastName && volunteer.firstName ? `${volunteer.lastName}, ${volunteer.firstName}` : volunteer.name }}</span>
                         <a
                           :href="`https://people.planningcenteronline.com/people/${volunteer.id}`"
                           target="_blank"
