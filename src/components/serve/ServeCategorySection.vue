@@ -1,0 +1,79 @@
+<script setup lang="ts">
+import type { ServeCategory, ServeTeam } from '@/data/serveTeams'
+import ServeTeamCard from './ServeTeamCard.vue'
+
+defineProps<{
+  category: ServeCategory
+  teams: ServeTeam[]
+}>()
+
+defineEmits<{
+  (e: 'select-team', team: ServeTeam): void
+  (e: 'sign-up', team: ServeTeam): void
+}>()
+
+// Get icon for category
+function getCategoryIcon(iconName: string): string {
+  const icons: Record<string, string> = {
+    'hand-wave': '👋',
+    'child': '🧒',
+    'users': '👥',
+    'globe': '🌍',
+    'music': '🎵',
+    'heart': '❤️',
+  }
+  return icons[iconName] || '📌'
+}
+
+// Get color classes for badge
+function getBadgeClasses(color: string): string {
+  const classes = {
+    blue: 'bg-blue-100 text-blue-800',
+    green: 'bg-green-100 text-green-800',
+    purple: 'bg-purple-100 text-purple-800',
+    orange: 'bg-orange-100 text-orange-800',
+    red: 'bg-red-100 text-red-800',
+    pink: 'bg-pink-100 text-pink-800',
+  } as const
+
+  type ColorKey = keyof typeof classes
+  return classes[color as ColorKey] ?? classes.blue
+}
+</script>
+
+<template>
+  <section class="py-16 scroll-mt-24">
+    <!-- Category Header -->
+    <div class="mb-10">
+      <div
+        :class="[
+          'inline-flex items-center gap-2 px-4 py-2 rounded-full mb-4',
+          getBadgeClasses(category.color)
+        ]"
+      >
+        <span class="text-xl">{{ getCategoryIcon(category.icon) }}</span>
+        <span class="font-semibold text-sm">{{ category.name }}</span>
+      </div>
+
+      <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
+        {{ category.name }}
+      </h2>
+
+      <p class="text-xl text-gray-600 max-w-3xl">
+        {{ category.description }}
+      </p>
+    </div>
+
+    <!-- Teams Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <ServeTeamCard
+        v-for="team in teams"
+        :key="team.id"
+        :team="team"
+        :category-color="category.color"
+        @click="$emit('select-team', team)"
+        @sign-up="$emit('sign-up', team)"
+      />
+    </div>
+  </section>
+</template>
