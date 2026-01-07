@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import type { ServeTeam } from '@/data/serveTeams'
+import ServeIcon from './ServeIcon.vue'
 
 const props = defineProps<{
   team: ServeTeam
@@ -51,8 +52,8 @@ onUnmounted(() => {
           </button>
 
           <!-- Icon -->
-          <div class="inline-flex items-center justify-center w-16 h-16 bg-[#095879]/10 text-[#095879] rounded-xl mb-4 text-4xl">
-            {{ team.icon }}
+          <div class="inline-flex items-center justify-center w-16 h-16 bg-[#095879]/10 text-[#095879] rounded-xl mb-4">
+            <ServeIcon :name="team.icon" class="w-10 h-10" />
           </div>
 
           <h2 class="text-2xl font-bold text-gray-900 mb-2 pr-8">

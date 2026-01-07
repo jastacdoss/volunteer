@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ServeCategory, ServeTeam } from '@/data/serveTeams'
 import ServeTeamCard from './ServeTeamCard.vue'
+import ServeIcon from './ServeIcon.vue'
 
 defineProps<{
   category: ServeCategory
@@ -11,19 +12,6 @@ defineEmits<{
   (e: 'select-team', team: ServeTeam): void
   (e: 'sign-up', team: ServeTeam): void
 }>()
-
-// Get icon for category
-function getCategoryIcon(iconName: string): string {
-  const icons: Record<string, string> = {
-    'hand-wave': '👋',
-    'child': '🧒',
-    'users': '👥',
-    'globe': '🌍',
-    'music': '🎵',
-    'heart': '❤️',
-  }
-  return icons[iconName] || '📌'
-}
 
 // Get color classes for badge
 function getBadgeClasses(color: string): string {
@@ -51,7 +39,7 @@ function getBadgeClasses(color: string): string {
           getBadgeClasses(category.color)
         ]"
       >
-        <span class="text-xl">{{ getCategoryIcon(category.icon) }}</span>
+        <ServeIcon :name="category.icon" class="w-5 h-5" />
         <span class="font-semibold text-sm">{{ category.name }}</span>
       </div>
 

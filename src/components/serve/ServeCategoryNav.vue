@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ServeCategory, TeamCategory } from '@/data/serveTeams'
+import ServeIcon from './ServeIcon.vue'
 
 defineProps<{
   categories: ServeCategory[]
@@ -9,19 +10,6 @@ defineProps<{
 defineEmits<{
   (e: 'select', categoryId: TeamCategory): void
 }>()
-
-// Get icon for category
-function getCategoryIcon(iconName: string): string {
-  const icons: Record<string, string> = {
-    'hand-wave': '👋',
-    'child': '🧒',
-    'users': '👥',
-    'globe': '🌍',
-    'music': '🎵',
-    'heart': '❤️',
-  }
-  return icons[iconName] || '📌'
-}
 
 // Get color classes for category
 function getColorClasses(color: string, isActive: boolean): string {
@@ -69,7 +57,7 @@ function getColorClasses(color: string, isActive: boolean): string {
             getColorClasses(category.color, activeCategory === category.id)
           ]"
         >
-          <span class="text-lg">{{ getCategoryIcon(category.icon) }}</span>
+          <ServeIcon :name="category.icon" class="w-5 h-5" />
           <span>{{ category.name }}</span>
         </button>
       </div>

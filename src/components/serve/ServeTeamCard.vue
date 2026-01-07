@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ServeTeam } from '@/data/serveTeams'
+import ServeIcon from './ServeIcon.vue'
 
 defineProps<{
   team: ServeTeam
@@ -52,11 +53,11 @@ function getIconBgClasses(color: string): string {
       <!-- Icon Badge -->
       <div
         :class="[
-          'inline-flex items-center justify-center w-14 h-14 rounded-xl mb-4 text-3xl',
+          'inline-flex items-center justify-center w-14 h-14 rounded-xl mb-4',
           getIconBgClasses(categoryColor)
         ]"
       >
-        {{ team.icon }}
+        <ServeIcon :name="team.icon" class="w-8 h-8" />
       </div>
 
       <h3 class="text-xl font-bold text-gray-900 mb-2 group-hover:text-[#095879] transition-colors">
