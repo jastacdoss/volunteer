@@ -132,20 +132,28 @@ onUnmounted(() => {
     />
 
     <!-- Main Content -->
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-      <!-- Category Sections -->
-      <ServeCategorySection
-        v-for="category in sortedCategories"
+    <main class="py-8">
+      <!-- Category Sections with alternating backgrounds -->
+      <div
+        v-for="(category, index) in sortedCategories"
         :key="category.id"
-        :id="`category-${category.id}`"
-        :category="category"
-        :teams="getTeamsByCategory(category.id)"
-        @select-team="handleTeamSelect"
-        @sign-up="handleSignUp"
-      />
+        :class="index % 2 === 1 ? 'bg-gray-50/70' : 'bg-white'"
+      >
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <ServeCategorySection
+            :id="`category-${category.id}`"
+            :category="category"
+            :teams="getTeamsByCategory(category.id)"
+            @select-team="handleTeamSelect"
+            @sign-up="handleSignUp"
+          />
+        </div>
+      </div>
 
       <!-- Find Your Fit CTA -->
-      <ServeQuizCTA />
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <ServeQuizCTA />
+      </div>
     </main>
 
     <!-- Footer -->

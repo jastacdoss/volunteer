@@ -45,24 +45,24 @@ function getIconBgClasses(color: string): string {
 
 <template>
   <div
-    class="group relative bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-300 overflow-hidden border border-gray-100 hover:border-gray-200 cursor-pointer"
-    @click="$emit('click')"
+    class="group relative bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-300 overflow-hidden border border-gray-100 hover:border-gray-200"
   >
     <!-- Content -->
     <div class="p-6">
-      <!-- Icon Badge -->
-      <div
-        :class="[
-          'inline-flex items-center justify-center w-14 h-14 rounded-xl mb-4',
-          getIconBgClasses(categoryColor)
-        ]"
-      >
-        <ServeIcon :name="team.icon" class="w-8 h-8" />
+      <!-- Header: Team name left, icon right -->
+      <div class="flex items-start justify-between mb-3">
+        <h3 class="text-xl font-bold text-gray-900 group-hover:text-[#095879] transition-colors pr-4">
+          {{ team.name }}
+        </h3>
+        <div
+          :class="[
+            'flex-shrink-0 flex items-center justify-center w-12 h-12 rounded-xl',
+            getIconBgClasses(categoryColor)
+          ]"
+        >
+          <ServeIcon :name="team.icon" class="w-7 h-7" />
+        </div>
       </div>
-
-      <h3 class="text-xl font-bold text-gray-900 mb-2 group-hover:text-[#095879] transition-colors">
-        {{ team.name }}
-      </h3>
 
       <p class="text-gray-600 mb-4 line-clamp-2">
         {{ team.description }}
@@ -93,15 +93,15 @@ function getIconBgClasses(color: string): string {
       <!-- Actions -->
       <div class="flex gap-3">
         <button
-          class="flex-1 px-4 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
-          @click.stop
+          class="flex-1 px-4 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors cursor-pointer"
+          @click="$emit('click')"
         >
           Learn More
         </button>
         <button
-          @click.stop="$emit('sign-up', team)"
+          @click="$emit('sign-up', team)"
           :class="[
-            'flex-1 px-4 py-2.5 text-sm font-medium text-white rounded-lg transition-colors',
+            'flex-1 px-4 py-2.5 text-sm font-medium text-white rounded-lg transition-colors cursor-pointer',
             getButtonClasses(categoryColor)
           ]"
         >

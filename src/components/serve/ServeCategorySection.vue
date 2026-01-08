@@ -30,24 +30,25 @@ function getBadgeClasses(color: string): string {
 </script>
 
 <template>
-  <section class="py-16 scroll-mt-24">
+  <section class="py-12 scroll-mt-24">
     <!-- Category Header -->
-    <div class="mb-10">
-      <div
-        :class="[
-          'inline-flex items-center gap-2 px-4 py-2 rounded-full mb-4',
-          getBadgeClasses(category.color)
-        ]"
-      >
-        <ServeIcon :name="category.icon" class="w-5 h-5" />
-        <span class="font-semibold text-sm">{{ category.name }}</span>
+    <div class="mb-8">
+      <div class="flex flex-wrap items-center gap-4 mb-3">
+        <h2 class="text-3xl md:text-4xl font-bold text-gray-900">
+          {{ category.name }}
+        </h2>
+        <div
+          :class="[
+            'inline-flex items-center gap-2 px-3 py-1.5 rounded-full',
+            getBadgeClasses(category.color)
+          ]"
+        >
+          <ServeIcon :name="category.icon" class="w-4 h-4" />
+          <span class="font-medium text-sm">{{ teams.length }} teams</span>
+        </div>
       </div>
 
-      <h2 class="text-3xl md:text-4xl font-bold text-gray-900 mb-4">
-        {{ category.name }}
-      </h2>
-
-      <p class="text-xl text-gray-600 max-w-3xl">
+      <p class="text-lg text-gray-600 max-w-3xl">
         {{ category.description }}
       </p>
     </div>
