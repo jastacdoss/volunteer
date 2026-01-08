@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useRoute } from 'vue-router'
 import RccHeader from '@/components/RccHeader.vue'
 import ServeHero from '@/components/serve/ServeHero.vue'
 import ServeCategoryNav from '@/components/serve/ServeCategoryNav.vue'
@@ -15,6 +16,11 @@ import {
   type ServeCategory,
   type TeamCategory,
 } from '@/data/serveTeams'
+
+const route = useRoute()
+
+// Check if we're in embed mode (for WordPress iframe)
+const isEmbed = computed(() => route.query.embed === 'true')
 
 // State
 const activeCategory = ref<TeamCategory | null>(null)
@@ -118,16 +124,17 @@ onUnmounted(() => {
 
 <template>
   <div class="min-h-screen bg-white">
-    <!-- Header (public mode - no portal nav) -->
-    <RccHeader :show-portal-nav="false" />
+    <!-- Header (hidden in embed mode) -->
+    <RccHeader v-if="!isEmbed" :show-portal-nav="false" />
 
-    <!-- Hero Section -->
-    <ServeHero @scroll-to-teams="scrollToTeams" />
+    <!-- Hero Section (hidden in embed mode) -->
+    <ServeHero v-if="!isEmbed" @scroll-to-teams="scrollToTeams" />
 
     <!-- Category Navigation (sticky) -->
     <ServeCategoryNav
       :categories="sortedCategories"
       :active-category="activeCategory"
+      :is-embed="isEmbed"
       @select="scrollToCategory"
     />
 
@@ -150,14 +157,14 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Find Your Fit CTA -->
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <!-- Find Your Fit CTA (hidden in embed mode) -->
+      <div v-if="!isEmbed" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <ServeQuizCTA />
       </div>
     </main>
 
-    <!-- Footer -->
-    <footer class="bg-gray-900 text-white py-12">
+    <!-- Footer (hidden in embed mode) -->
+    <footer v-if="!isEmbed" class="bg-gray-900 text-white py-12">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
           <div>

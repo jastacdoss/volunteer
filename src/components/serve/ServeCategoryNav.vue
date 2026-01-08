@@ -5,6 +5,7 @@ import ServeIcon from './ServeIcon.vue'
 defineProps<{
   categories: ServeCategory[]
   activeCategory: TeamCategory | null
+  isEmbed?: boolean
 }>()
 
 defineEmits<{
