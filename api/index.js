@@ -2754,6 +2754,121 @@ app.get('/api/background-check/:personId', async (req, res) => {
   }
 })
 
+// ============================================================================
+// PUBLIC: LifeGroups API for map display
+// ============================================================================
+app.get('/api/groups', async (req, res) => {
+  try {
+    if (!process.env.PCO_APP_ID || !process.env.PCO_SECRET) {
+      return res.status(500).json({ error: 'PCO credentials not configured' })
+    }
+
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+    const authHeader = `Basic ${credentials}`
+
+    // Fetch all groups with location included (paginated)
+    let allGroups = []
+    let allLocations = new Map()
+    let nextUrl = 'https://api.planningcenteronline.com/groups/v2/groups?include=location&per_page=100&filter=listed'
+
+    while (nextUrl) {
+      console.log('[Groups API] Fetching:', nextUrl)
+      const response = await fetch(nextUrl, {
+        headers: { Authorization: authHeader }
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('[Groups API] Error:', response.status, errorText)
+        return res.status(response.status).json({
+          error: 'PCO API error',
+          status: response.status
+        })
+      }
+
+      const data = await response.json()
+      allGroups = allGroups.concat(data.data || [])
+
+      // Collect included locations
+      if (data.included) {
+        data.included.forEach(item => {
+          if (item.type === 'Location') {
+            allLocations.set(item.id, item.attributes)
+          }
+        })
+      }
+
+      nextUrl = data.links?.next || null
+    }
+
+    // Transform to simplified format for frontend
+    const groups = allGroups
+      .filter(group => !group.attributes.archived_at) // Exclude archived
+      .map(group => {
+        const locationId = group.relationships?.location?.data?.id
+        const location = locationId ? allLocations.get(locationId) : null
+
+        const name = group.attributes.name
+        const description = group.attributes.description_as_plain_text || group.attributes.description || ''
+
+        // Detect childcare from name or description
+        const hasChildcare = /childcare|child care|\(w\/childcare\)/i.test(name) ||
+                            /childcare (is )?available|childcare provided/i.test(description)
+
+        return {
+          id: group.id,
+          name,
+          description,
+          schedule: group.attributes.schedule,
+          contactEmail: group.attributes.contact_email,
+          membersCount: group.attributes.memberships_count,
+          publicUrl: group.attributes.public_church_center_web_url,
+          headerImage: group.attributes.header_image?.medium,
+          groupTypeId: group.relationships?.group_type?.data?.id,
+          hasChildcare,
+          location: location ? {
+            name: location.name,
+            address: location.full_formatted_address,
+            lat: parseFloat(location.latitude),
+            lng: parseFloat(location.longitude),
+            displayPreference: location.display_preference
+          } : null
+        }
+      })
+
+    // Also fetch group types for filtering
+    const typesResponse = await fetch(
+      'https://api.planningcenteronline.com/groups/v2/group_types',
+      { headers: { Authorization: authHeader } }
+    )
+
+    let groupTypes = []
+    if (typesResponse.ok) {
+      const typesData = await typesResponse.json()
+      groupTypes = (typesData.data || []).map(t => ({
+        id: t.id,
+        name: t.attributes.name,
+        description: t.attributes.description
+      }))
+    }
+
+    res.json({
+      groups,
+      groupTypes,
+      meta: {
+        totalGroups: groups.length,
+        groupsWithLocation: groups.filter(g => g.location).length
+      }
+    })
+  } catch (error) {
+    console.error('[Groups API] Error:', error)
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    })
+  }
+})
+
 // For local development only (Vercel ignores this)
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
