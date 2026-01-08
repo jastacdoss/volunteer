@@ -6,6 +6,7 @@ import AdminMatrixView from '../views/AdminMatrixView.vue'
 import LeaderView from '../views/LeaderView.vue'
 import LeaderVolunteerView from '../views/LeaderVolunteerView.vue'
 import ServeView from '../views/ServeView.vue'
+import LifeGroupsMapView from '../views/LifeGroupsMapView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -44,6 +45,12 @@ const router = createRouter({
       path: '/serve',
       name: 'serve',
       component: ServeView,
+      meta: { public: true },
+    },
+    {
+      path: '/lifegroups',
+      name: 'lifegroups',
+      component: LifeGroupsMapView,
       meta: { public: true },
     },
   ],
