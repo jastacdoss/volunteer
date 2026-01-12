@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import FindYourFitHero from '@/components/shared/FindYourFitHero.vue'
 import LifeGroupsMap from '@/components/lifegroups/LifeGroupsMap.vue'
 import LifeGroupCard from '@/components/lifegroups/LifeGroupCard.vue'
 import LifeGroupModal from '@/components/lifegroups/LifeGroupModal.vue'
+import { updateEmbedHeight } from '@/lib/embedResize'
 
 interface GroupLocation {
   name: string
@@ -142,6 +143,13 @@ function closeModal() {
 
 onMounted(() => {
   fetchGroups()
+})
+
+// Update embed height when view changes or data loads
+watch([showList, loading], () => {
+  if (isEmbed.value) {
+    setTimeout(updateEmbedHeight, 100)
+  }
 })
 </script>
 
