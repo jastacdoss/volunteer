@@ -30,6 +30,8 @@ interface Group {
 
 const props = defineProps<{
   groups: Group[]
+  dayColors: Record<string, { bg: string; text: string; pin: string }>
+  getDayFromSchedule: (schedule: string | null) => string
 }>()
 
 const emit = defineEmits<{
@@ -40,18 +42,10 @@ const mapContainer = ref<HTMLElement | null>(null)
 let map: L.Map | null = null
 let markerClusterGroup: L.MarkerClusterGroup | null = null
 
-// Custom marker icon
-const createIcon = (isCluster = false, count = 0) => {
-  if (isCluster) {
-    return L.divIcon({
-      html: `<div class="cluster-icon">${count}</div>`,
-      className: 'custom-cluster-icon',
-      iconSize: L.point(40, 40)
-    })
-  }
-
+// Custom marker icon with color
+const createIcon = (color: string) => {
   return L.divIcon({
-    html: `<div class="marker-icon">
+    html: `<div class="marker-icon" style="color: ${color}">
       <svg viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6">
         <path fill-rule="evenodd" d="M11.54 22.351l.07.04.028.016a.76.76 0 00.723 0l.028-.015.071-.041a16.975 16.975 0 001.144-.742 19.58 19.58 0 002.683-2.282c1.944-1.99 3.963-4.98 3.963-8.827a8.25 8.25 0 00-16.5 0c0 3.846 2.02 6.837 3.963 8.827a19.58 19.58 0 002.682 2.282 16.975 16.975 0 001.145.742zM12 13.5a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
       </svg>
@@ -74,10 +68,11 @@ function initMap() {
     zoomControl: true
   })
 
-  // Add OpenStreetMap tiles
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    maxZoom: 19
+  // Add CartoDB Voyager tiles (muted, modern style)
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    maxZoom: 19,
+    subdomains: 'abcd'
   }).addTo(map)
 
   // Initialize marker cluster group
@@ -111,8 +106,12 @@ function updateMarkers() {
   props.groups.forEach(group => {
     if (!group.location) return
 
+    // Get color based on meeting day
+    const day = props.getDayFromSchedule(group.schedule)
+    const color = props.dayColors[day]?.pin || props.dayColors['Unknown']?.pin || '#6B7280'
+
     const marker = L.marker([group.location.lat, group.location.lng], {
-      icon: createIcon()
+      icon: createIcon(color)
     })
 
     // Create popup content with all details and icons
@@ -220,7 +219,6 @@ onUnmounted(() => {
 .marker-icon {
   width: 36px;
   height: 36px;
-  color: #095879;
   filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
 }
 

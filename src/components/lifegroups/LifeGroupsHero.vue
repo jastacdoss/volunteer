@@ -1,6 +1,7 @@
 <script setup lang="ts">
 defineEmits<{
-  (e: 'scroll-to-teams'): void
+  (e: 'view-map'): void
+  (e: 'view-list'): void
 }>()
 </script>
 
@@ -19,30 +20,31 @@ defineEmits<{
     <div class="relative z-10 text-center text-white px-4 max-w-4xl mx-auto">
       <div class="mb-6">
         <span class="inline-block px-4 py-2 bg-white/10 backdrop-blur-sm rounded-full text-sm font-medium text-blue-100 border border-white/20">
-          Find Your Place at RCC
+          Find Your Community
         </span>
       </div>
 
       <h1 class="text-5xl md:text-7xl font-bold mb-6 tracking-tight">
-        Get Plugged In
+        Find a LifeGroup
       </h1>
 
       <p class="text-xl md:text-2xl text-blue-100 mb-10 max-w-2xl mx-auto leading-relaxed">
-        Discover how your unique gifts can make a difference.
-        Join a team and be part of something bigger.
+        LifeGroups meet in homes throughout the week.
+        Find one near you and start building meaningful relationships.
       </p>
 
       <div class="flex flex-col sm:flex-row gap-4 justify-center">
         <button
-          @click="$emit('scroll-to-teams')"
+          @click="$emit('view-map')"
           class="px-8 py-4 bg-white text-[#095879] font-bold rounded-full hover:bg-blue-50 transition-all shadow-lg hover:shadow-xl hover:scale-105 transform"
         >
-          Explore Teams
+          View Map
         </button>
         <button
+          @click="$emit('view-list')"
           class="px-8 py-4 border-2 border-white text-white font-bold rounded-full hover:bg-white/10 transition-all"
         >
-          Find Your Fit
+          Browse List
         </button>
       </div>
     </div>
@@ -50,9 +52,9 @@ defineEmits<{
     <!-- Scroll indicator -->
     <div class="absolute bottom-8 left-1/2 -translate-x-1/2 animate-bounce">
       <button
-        @click="$emit('scroll-to-teams')"
+        @click="$emit('view-map')"
         class="text-white/60 hover:text-white transition-colors"
-        aria-label="Scroll to teams"
+        aria-label="Scroll to content"
       >
         <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path>

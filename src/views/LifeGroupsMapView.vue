@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
+import FindYourFitHero from '@/components/shared/FindYourFitHero.vue'
 import LifeGroupsMap from '@/components/lifegroups/LifeGroupsMap.vue'
 import LifeGroupCard from '@/components/lifegroups/LifeGroupCard.vue'
 import LifeGroupModal from '@/components/lifegroups/LifeGroupModal.vue'
@@ -46,10 +47,55 @@ const selectedGroup = ref<Group | null>(null)
 const showList = ref(false)
 const lifeGroupTypeId = ref<string | null>(null)
 
+// Day of week colors
+const dayColors: Record<string, { bg: string; text: string; pin: string }> = {
+  Sunday: { bg: 'bg-red-100', text: 'text-red-800', pin: '#DC2626' },
+  Monday: { bg: 'bg-orange-100', text: 'text-orange-800', pin: '#EA580C' },
+  Tuesday: { bg: 'bg-amber-100', text: 'text-amber-800', pin: '#D97706' },
+  Wednesday: { bg: 'bg-green-100', text: 'text-green-800', pin: '#16A34A' },
+  Thursday: { bg: 'bg-blue-100', text: 'text-blue-800', pin: '#2563EB' },
+  Friday: { bg: 'bg-purple-100', text: 'text-purple-800', pin: '#9333EA' },
+  Saturday: { bg: 'bg-pink-100', text: 'text-pink-800', pin: '#DB2777' },
+  Unknown: { bg: 'bg-gray-100', text: 'text-gray-800', pin: '#6B7280' },
+}
+
+// Day order for sorting
+const dayOrder = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Unknown']
+
+// Extract day of week from schedule string
+// Handles formats like "Sundays 5-7pm", "Meets weekly on Sundays from 5-7pm", "Thursdays from 6:30-8pm"
+function getDayFromSchedule(schedule: string | null): string {
+  if (!schedule) return 'Unknown'
+  // Match day of week anywhere in the string
+  const match = schedule.match(/(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)s?/i)
+  if (match && match[1]) {
+    // Capitalize first letter, rest lowercase
+    const day = match[1]
+    return day.charAt(0).toUpperCase() + day.slice(1).toLowerCase()
+  }
+  return 'Unknown'
+}
+
 // Filter to only LifeGroups
 const filteredGroups = computed(() => {
   if (!lifeGroupTypeId.value) return groups.value
   return groups.value.filter(g => g.groupTypeId === lifeGroupTypeId.value)
+})
+
+// Groups organized by day of week
+const groupsByDay = computed(() => {
+  const byDay: Record<string, Group[]> = {}
+
+  filteredGroups.value.forEach(group => {
+    const day = getDayFromSchedule(group.schedule)
+    if (!byDay[day]) byDay[day] = []
+    byDay[day].push(group)
+  })
+
+  // Sort by day order and return as array of [day, groups] pairs
+  return dayOrder
+    .filter(day => byDay[day] && byDay[day].length > 0)
+    .map(day => ({ day, groups: byDay[day] as Group[], colors: dayColors[day] }))
 })
 
 // Groups with valid locations for mapping
@@ -103,23 +149,17 @@ onMounted(() => {
   <div :class="['min-h-screen bg-gray-50', { 'embed-mode': isEmbed }]">
     <!-- Main Content -->
     <main>
-      <!-- Hero Section (hidden in embed mode) -->
-      <section v-if="!isEmbed" class="bg-gradient-to-br from-[#095879] to-[#0a6d94] text-white py-16">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div class="text-center">
-            <h1 class="text-4xl md:text-5xl font-bold mb-4">Find a LifeGroup</h1>
-            <p class="text-xl text-white/90 max-w-2xl mx-auto">
-              LifeGroups meet in homes throughout the week. Find one near you and start building meaningful relationships.
-            </p>
-          </div>
-        </div>
-      </section>
+      <!-- Hero Section -->
+      <FindYourFitHero />
 
       <!-- Filter Bar -->
-      <div :class="[
-        'bg-white border-b border-gray-200 sticky z-40',
-        isEmbed ? 'top-0' : 'top-0'
-      ]">
+      <div
+        id="page-content"
+        :class="[
+          'bg-white border-b border-gray-200 sticky z-40',
+          'top-0'
+        ]"
+      >
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <!-- View Toggle -->
@@ -183,22 +223,43 @@ onMounted(() => {
       </div>
 
       <!-- Map View -->
-      <div v-else-if="!showList" :class="isEmbed ? 'h-[calc(100vh-56px)]' : 'h-[600px]'">
+      <div v-else-if="!showList" class="relative h-[600px]">
         <LifeGroupsMap
           :groups="mappableGroups"
+          :day-colors="dayColors"
+          :get-day-from-schedule="getDayFromSchedule"
           @marker-click="handleMarkerClick"
         />
+        <!-- Legend -->
+        <div class="absolute top-4 right-4 bg-white/95 backdrop-blur-sm rounded-lg shadow-lg p-3 z-[1000]">
+          <div class="text-xs font-semibold text-gray-700 mb-2">Meeting Day</div>
+          <div class="flex flex-col gap-1">
+            <div v-for="dayGroup in groupsByDay" :key="dayGroup.day" class="flex items-center gap-2">
+              <div class="w-2.5 h-2.5 rounded-full" :style="{ backgroundColor: dayGroup.colors?.pin }"></div>
+              <span class="text-xs text-gray-600">{{ dayGroup.day }}</span>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <!-- List View -->
+      <!-- List View (grouped by day) -->
       <div v-else class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          <LifeGroupCard
-            v-for="group in filteredGroups"
-            :key="group.id"
-            :group="group"
-            @click="selectedGroup = group"
-          />
+        <div v-for="dayGroup in groupsByDay" :key="dayGroup.day" class="mb-10">
+          <!-- Day Header -->
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-3 h-3 rounded-full" :style="{ backgroundColor: dayGroup.colors?.pin }"></div>
+            <h2 class="text-xl font-bold text-gray-900">{{ dayGroup.day }}</h2>
+            <span class="text-sm text-gray-500">({{ dayGroup.groups?.length }} groups)</span>
+          </div>
+          <!-- Groups Grid -->
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <LifeGroupCard
+              v-for="group in dayGroup.groups"
+              :key="group.id"
+              :group="group"
+              @click="selectedGroup = group"
+            />
+          </div>
         </div>
       </div>
     </main>

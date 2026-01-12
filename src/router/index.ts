@@ -7,6 +7,7 @@ import LeaderView from '../views/LeaderView.vue'
 import LeaderVolunteerView from '../views/LeaderVolunteerView.vue'
 import ServeView from '../views/ServeView.vue'
 import LifeGroupsMapView from '../views/LifeGroupsMapView.vue'
+import FindYourFitView from '../views/FindYourFitView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -51,6 +52,12 @@ const router = createRouter({
       path: '/lifegroups',
       name: 'lifegroups',
       component: LifeGroupsMapView,
+      meta: { public: true },
+    },
+    {
+      path: '/find-your-fit',
+      name: 'find-your-fit',
+      component: FindYourFitView,
       meta: { public: true },
     },
   ],

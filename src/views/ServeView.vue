@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import RccHeader from '@/components/RccHeader.vue'
-import ServeHero from '@/components/serve/ServeHero.vue'
+import FindYourFitHero from '@/components/shared/FindYourFitHero.vue'
 import ServeCategoryNav from '@/components/serve/ServeCategoryNav.vue'
 import ServeCategorySection from '@/components/serve/ServeCategorySection.vue'
 import ServeTeamModal from '@/components/serve/ServeTeamModal.vue'
@@ -128,15 +128,17 @@ onUnmounted(() => {
     <RccHeader v-if="!isEmbed" :show-portal-nav="false" />
 
     <!-- Hero Section (hidden in embed mode) -->
-    <ServeHero v-if="!isEmbed" @scroll-to-teams="scrollToTeams" />
+    <FindYourFitHero />
 
     <!-- Category Navigation (sticky) -->
-    <ServeCategoryNav
-      :categories="sortedCategories"
-      :active-category="activeCategory"
-      :is-embed="isEmbed"
-      @select="scrollToCategory"
-    />
+    <div id="page-content">
+      <ServeCategoryNav
+        :categories="sortedCategories"
+        :active-category="activeCategory"
+        :is-embed="isEmbed"
+        @select="scrollToCategory"
+      />
+    </div>
 
     <!-- Main Content -->
     <main class="py-8">
