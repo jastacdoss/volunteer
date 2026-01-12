@@ -123,7 +123,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-white">
+  <div :class="isEmbed ? 'bg-white' : 'min-h-screen bg-white'">
     <!-- Header (hidden in embed mode) -->
     <RccHeader v-if="!isEmbed" :show-portal-nav="false" />
 

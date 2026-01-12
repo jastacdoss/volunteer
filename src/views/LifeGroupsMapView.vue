@@ -154,7 +154,7 @@ watch([showList, loading], () => {
 </script>
 
 <template>
-  <div :class="['min-h-screen bg-gray-50', { 'embed-mode': isEmbed }]">
+  <div :class="[isEmbed ? 'bg-gray-50' : 'min-h-screen bg-gray-50', { 'embed-mode': isEmbed }]">
     <!-- Main Content -->
     <main>
       <!-- Hero Section -->

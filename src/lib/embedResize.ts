@@ -11,7 +11,9 @@ function sendHeight() {
   if (debounceTimer) clearTimeout(debounceTimer)
 
   debounceTimer = setTimeout(() => {
-    const height = document.documentElement.scrollHeight
+    // Use body.offsetHeight for actual rendered content height
+    // This avoids issues with min-h-screen and viewport-based heights
+    const height = document.body.offsetHeight
     window.parent.postMessage({ type: 'resize', height }, '*')
   }, 50)
 }

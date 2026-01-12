@@ -11,7 +11,7 @@ const isEmbed = computed(() => route.query.embed === 'true')
 </script>
 
 <template>
-  <div class="min-h-screen bg-gray-50">
+  <div :class="isEmbed ? 'bg-gray-50' : 'min-h-screen bg-gray-50'">
     <!-- Header (hidden in embed mode) -->
     <RccHeader v-if="!isEmbed" :show-portal-nav="false" />
 
