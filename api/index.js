@@ -4,7 +4,8 @@ import dotenv from 'dotenv'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import { setVolunteer, getVolunteer, getAllVolunteers, clearAllVolunteers, deleteVolunteer, setTeamRequirements, getTeamRequirements } from './lib/kv.js'
+import { setVolunteer, getVolunteer, getAllVolunteers, clearAllVolunteers, deleteVolunteer, setTeamRequirements, getTeamRequirements, getResources, addFolder, deleteFolder, updateFolder, addFile, deleteFile, updateFile } from './lib/kv.js'
+import { uploadFile, deleteFileFromR2, getDownloadUrl, getUploadUrl } from './lib/r2.js'
 import { makeRequest, getRateLimiterStats, resetRateLimiterStats } from './lib/rate-limiter.js'
 import { FIELD_IDS, FIELD_NAMES } from './config/field-ids.js'
 import { REFERENCES_FORM_FIELDS } from './config/form-field-ids.js'
@@ -2906,6 +2907,470 @@ if (process.env.NODE_ENV !== 'production') {
     setInterval(autoSync, 10 * 60 * 1000)
   })
 }
+
+// ============ Resources API ============
+
+// Get all resources (folders and files) - requires authentication
+app.get('/api/resources', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' })
+    }
+
+    const resources = await getResources()
+    res.json(resources)
+  } catch (err) {
+    console.error('[Resources] Error fetching resources:', err)
+    res.status(500).json({ error: 'Failed to fetch resources' })
+  }
+})
+
+// Get download URL for a file - requires authentication
+app.get('/api/resources/download/:fileId', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' })
+    }
+
+    const { fileId } = req.params
+    const resources = await getResources()
+    const file = resources.files.find(f => f.id === fileId)
+
+    if (!file) {
+      return res.status(404).json({ error: 'File not found' })
+    }
+
+    const downloadUrl = await getDownloadUrl(file.r2Key)
+    res.json({ url: downloadUrl, filename: file.name })
+  } catch (err) {
+    console.error('[Resources] Error getting download URL:', err)
+    res.status(500).json({ error: 'Failed to get download URL' })
+  }
+})
+
+// Create a folder - admin only
+app.post('/api/resources/folders', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' })
+    }
+
+    const accessToken = authHeader.split(' ')[1]
+
+    // Check if user is admin
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    })
+
+    if (!userResponse.ok) {
+      return res.status(401).json({ error: 'Invalid token' })
+    }
+
+    const userData = await userResponse.json()
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    const { name, parentId } = req.body
+
+    if (!name) {
+      return res.status(400).json({ error: 'Folder name is required' })
+    }
+
+    const folder = {
+      id: `folder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      name,
+      parentId: parentId || null,
+      createdAt: new Date().toISOString(),
+      createdBy: userData.data.attributes.name || userData.data.id
+    }
+
+    await addFolder(folder)
+    res.json(folder)
+  } catch (err) {
+    console.error('[Resources] Error creating folder:', err)
+    res.status(500).json({ error: 'Failed to create folder' })
+  }
+})
+
+// Delete a folder - admin only
+app.delete('/api/resources/folders/:folderId', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' })
+    }
+
+    const accessToken = authHeader.split(' ')[1]
+
+    // Check if user is admin
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    })
+
+    if (!userResponse.ok) {
+      return res.status(401).json({ error: 'Invalid token' })
+    }
+
+    const userData = await userResponse.json()
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    const { folderId } = req.params
+
+    // Get files in folder to delete from R2
+    const resources = await getResources()
+    const filesToDelete = resources.files.filter(f => f.folderId === folderId)
+
+    // Delete files from R2
+    for (const file of filesToDelete) {
+      try {
+        await deleteFileFromR2(file.r2Key)
+      } catch (err) {
+        console.error(`[Resources] Failed to delete file from R2: ${file.r2Key}`, err)
+      }
+    }
+
+    await deleteFolder(folderId)
+    res.json({ success: true, deletedFiles: filesToDelete.length })
+  } catch (err) {
+    console.error('[Resources] Error deleting folder:', err)
+    res.status(500).json({ error: 'Failed to delete folder' })
+  }
+})
+
+// Rename a folder - admin only
+app.patch('/api/resources/folders/:folderId', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' })
+    }
+
+    const accessToken = authHeader.split(' ')[1]
+
+    // Check if user is admin
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    })
+
+    if (!userResponse.ok) {
+      return res.status(401).json({ error: 'Invalid token' })
+    }
+
+    const userData = await userResponse.json()
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    const { folderId } = req.params
+    const { name } = req.body
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Folder name is required' })
+    }
+
+    const updatedFolder = await updateFolder(folderId, { name: name.trim() })
+
+    if (!updatedFolder) {
+      return res.status(404).json({ error: 'Folder not found' })
+    }
+
+    res.json(updatedFolder)
+  } catch (err) {
+    console.error('[Resources] Error renaming folder:', err)
+    res.status(500).json({ error: 'Failed to rename folder' })
+  }
+})
+
+// Get upload URL for a file - admin only
+app.post('/api/resources/upload-url', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' })
+    }
+
+    const accessToken = authHeader.split(' ')[1]
+
+    // Check if user is admin
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    })
+
+    if (!userResponse.ok) {
+      return res.status(401).json({ error: 'Invalid token' })
+    }
+
+    const userData = await userResponse.json()
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    const { filename, contentType, folderId, displayName } = req.body
+
+    if (!filename || !contentType) {
+      return res.status(400).json({ error: 'Filename and contentType are required' })
+    }
+
+    // Generate a unique key for the file
+    const fileId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    const r2Key = `lifegroups/${folderId || 'root'}/${fileId}-${filename}`
+
+    // Get signed upload URL
+    const uploadUrl = await getUploadUrl(r2Key, contentType)
+    console.log('[Resources] Generated upload URL:', uploadUrl.split('?')[0]) // Log URL without signature
+
+    // Create file metadata (will be saved after successful upload)
+    const fileMetadata = {
+      id: fileId,
+      name: filename,
+      displayName: displayName || filename, // Use displayName if provided, otherwise use filename
+      contentType,
+      folderId: folderId || null,
+      r2Key,
+      createdAt: new Date().toISOString(),
+      createdBy: userData.data.attributes.name || userData.data.id
+    }
+
+    res.json({ uploadUrl, fileMetadata })
+  } catch (err) {
+    console.error('[Resources] Error getting upload URL:', err)
+    res.status(500).json({ error: 'Failed to get upload URL' })
+  }
+})
+
+// Confirm file upload (save metadata after successful upload) - admin only
+app.post('/api/resources/files', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' })
+    }
+
+    const accessToken = authHeader.split(' ')[1]
+
+    // Check if user is admin
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    })
+
+    if (!userResponse.ok) {
+      return res.status(401).json({ error: 'Invalid token' })
+    }
+
+    const userData = await userResponse.json()
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    const { fileMetadata } = req.body
+
+    if (!fileMetadata || !fileMetadata.id) {
+      return res.status(400).json({ error: 'File metadata is required' })
+    }
+
+    await addFile(fileMetadata)
+    res.json(fileMetadata)
+  } catch (err) {
+    console.error('[Resources] Error saving file metadata:', err)
+    res.status(500).json({ error: 'Failed to save file metadata' })
+  }
+})
+
+// Delete a file - admin only
+app.delete('/api/resources/files/:fileId', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' })
+    }
+
+    const accessToken = authHeader.split(' ')[1]
+
+    // Check if user is admin
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    })
+
+    if (!userResponse.ok) {
+      return res.status(401).json({ error: 'Invalid token' })
+    }
+
+    const userData = await userResponse.json()
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    const { fileId } = req.params
+
+    // Delete from metadata (returns the file so we can delete from R2)
+    const file = await deleteFile(fileId)
+
+    if (file) {
+      // Delete from R2
+      try {
+        await deleteFileFromR2(file.r2Key)
+      } catch (err) {
+        console.error(`[Resources] Failed to delete file from R2: ${file.r2Key}`, err)
+      }
+    }
+
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[Resources] Error deleting file:', err)
+    res.status(500).json({ error: 'Failed to delete file' })
+  }
+})
+
+// Move a file to a different folder - admin only
+app.patch('/api/resources/files/:fileId', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' })
+    }
+
+    const accessToken = authHeader.split(' ')[1]
+
+    // Check if user is admin
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    })
+
+    if (!userResponse.ok) {
+      return res.status(401).json({ error: 'Invalid token' })
+    }
+
+    const userData = await userResponse.json()
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    const { fileId } = req.params
+    const { folderId, displayName } = req.body
+
+    // Build updates object
+    const updates = {}
+    if (folderId !== undefined) {
+      updates.folderId = folderId || null
+    }
+    if (displayName !== undefined) {
+      updates.displayName = displayName.trim()
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No updates provided' })
+    }
+
+    const updatedFile = await updateFile(fileId, updates)
+
+    if (!updatedFile) {
+      return res.status(404).json({ error: 'File not found' })
+    }
+
+    res.json(updatedFile)
+  } catch (err) {
+    console.error('[Resources] Error updating file:', err)
+    res.status(500).json({ error: 'Failed to update file' })
+  }
+})
+
+// Test R2 configuration - admin only
+app.get('/api/resources/test-r2', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' })
+    }
+
+    const accessToken = authHeader.split(' ')[1]
+
+    // Check if user is admin
+    const userResponse = await fetch('https://api.planningcenteronline.com/people/v2/me', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    })
+
+    if (!userResponse.ok) {
+      return res.status(401).json({ error: 'Invalid token' })
+    }
+
+    const userData = await userResponse.json()
+    const isSiteAdmin = userData.data.attributes?.site_administrator === true
+    const peoplePermissions = userData.data.attributes?.people_permissions || ''
+    const isPeopleAdmin = peoplePermissions === 'Manager' || peoplePermissions === 'Administrator'
+    const isAdmin = isSiteAdmin || isPeopleAdmin
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' })
+    }
+
+    // Check R2 config
+    const config = {
+      hasAccountId: !!process.env.R2_ACCOUNT_ID,
+      hasAccessKey: !!process.env.R2_ACCESS_KEY_ID,
+      hasSecretKey: !!process.env.R2_SECRET_ACCESS_KEY,
+      hasBucket: !!process.env.R2_BUCKET_NAME,
+      bucket: process.env.R2_BUCKET_NAME,
+      endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`
+    }
+
+    // Try to generate a test presigned URL
+    const testKey = `test/connection-test-${Date.now()}.txt`
+    const testUrl = await getUploadUrl(testKey, 'text/plain')
+
+    res.json({
+      config,
+      testUploadUrl: testUrl.split('?')[0], // URL without signature
+      message: 'R2 configuration looks correct. Make sure CORS is configured on the R2 bucket.'
+    })
+  } catch (err) {
+    console.error('[Resources] R2 test error:', err)
+    res.status(500).json({
+      error: 'R2 configuration test failed',
+      details: err.message
+    })
+  }
+})
 
 // Export for Vercel serverless functions
 export default app

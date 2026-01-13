@@ -78,3 +78,73 @@ export async function getTeamRequirements() {
   const data = await client.get('team-requirements')
   return data ? (typeof data === 'string' ? JSON.parse(data) : data) : null
 }
+
+// ============ Resources (folders/files) ============
+
+// Get all resources (folders and files metadata)
+export async function getResources() {
+  const client = getRedis()
+  const data = await client.get('resources')
+  return data ? (typeof data === 'string' ? JSON.parse(data) : data) : { folders: [], files: [] }
+}
+
+// Save all resources
+export async function setResources(resources) {
+  const client = getRedis()
+  await client.set('resources', JSON.stringify(resources))
+}
+
+// Add a folder
+export async function addFolder(folder) {
+  const resources = await getResources()
+  resources.folders.push(folder)
+  await setResources(resources)
+  return folder
+}
+
+// Delete a folder (and optionally its files)
+export async function deleteFolder(folderId) {
+  const resources = await getResources()
+  resources.folders = resources.folders.filter(f => f.id !== folderId)
+  resources.files = resources.files.filter(f => f.folderId !== folderId)
+  await setResources(resources)
+}
+
+// Update a folder's metadata (e.g., rename)
+export async function updateFolder(folderId, updates) {
+  const resources = await getResources()
+  const folderIndex = resources.folders.findIndex(f => f.id === folderId)
+  if (folderIndex === -1) return null
+
+  resources.folders[folderIndex] = { ...resources.folders[folderIndex], ...updates }
+  await setResources(resources)
+  return resources.folders[folderIndex]
+}
+
+// Add a file metadata entry
+export async function addFile(file) {
+  const resources = await getResources()
+  resources.files.push(file)
+  await setResources(resources)
+  return file
+}
+
+// Delete a file metadata entry
+export async function deleteFile(fileId) {
+  const resources = await getResources()
+  const file = resources.files.find(f => f.id === fileId)
+  resources.files = resources.files.filter(f => f.id !== fileId)
+  await setResources(resources)
+  return file // Return the deleted file so we can delete from R2
+}
+
+// Update a file's metadata (e.g., move to different folder)
+export async function updateFile(fileId, updates) {
+  const resources = await getResources()
+  const fileIndex = resources.files.findIndex(f => f.id === fileId)
+  if (fileIndex === -1) return null
+
+  resources.files[fileIndex] = { ...resources.files[fileIndex], ...updates }
+  await setResources(resources)
+  return resources.files[fileIndex]
+}

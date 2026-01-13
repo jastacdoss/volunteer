@@ -8,6 +8,7 @@ import LeaderVolunteerView from '../views/LeaderVolunteerView.vue'
 import ServeView from '../views/ServeView.vue'
 import LifeGroupsMapView from '../views/LifeGroupsMapView.vue'
 import FindYourFitView from '../views/FindYourFitView.vue'
+import ResourcesView from '../views/ResourcesView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -59,6 +60,11 @@ const router = createRouter({
       name: 'find-your-fit',
       component: FindYourFitView,
       meta: { public: true },
+    },
+    {
+      path: '/resources',
+      name: 'resources',
+      component: ResourcesView,
     },
   ],
 })

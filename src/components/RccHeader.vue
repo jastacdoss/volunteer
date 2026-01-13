@@ -333,6 +333,13 @@ onMounted(() => {
               My Onboarding
             </router-link>
             <router-link
+              to="/resources"
+              class="text-sm font-medium transition-colors"
+              :class="$route.path === '/resources' ? 'text-[#095879]' : 'text-gray-600 hover:text-gray-900'"
+            >
+              Study Materials
+            </router-link>
+            <router-link
               v-if="isLeader"
               to="/leader"
               class="text-sm font-medium transition-colors"
