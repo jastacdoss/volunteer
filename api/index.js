@@ -280,10 +280,11 @@ async function checkAdminOrLeader(accessToken, requiredTeam = null) {
 // Helper: Calculate progress for a volunteer
 // Only counts: Declaration/BG Check (1), References (2), Child Safety (3), Mandated Reporter (4), Covenant (5)
 // Max 5 (Kids team with all required) - Min 1 (Usher with only Covenant)
-function calculateProgress(fields, backgroundCheck, requiredFields, covenantLevel, personId = null) {
+function calculateProgress(fields, backgroundCheck, requiredFields, covenantLevel, personId = null, options = {}) {
   let completed = 0
   let total = 0
   const debug = personId === '170696784' // Test Testlinger
+  const { countDeclarationBgSeparately = false } = options
 
   if (debug) {
     console.log('[Progress Debug 170696784] Fields:', JSON.stringify(fields, null, 2))
@@ -291,17 +292,30 @@ function calculateProgress(fields, backgroundCheck, requiredFields, covenantLeve
     console.log('[Progress Debug 170696784] Covenant Level:', covenantLevel)
   }
 
-  // Declaration/BG Check (counted as ONE step - both must be complete if both required)
-  if (requiredFields.declaration || requiredFields.backgroundCheck) {
-    total++
-    const declarationComplete = !requiredFields.declaration || fields.declaration
-    const bgCheckComplete = !requiredFields.backgroundCheck || (backgroundCheck?.status === 'completed' || backgroundCheck?.status === 'manual_clear')
+  // Declaration and BG Check handling
+  if (countDeclarationBgSeparately) {
+    // Count as TWO separate steps (for Leader Dashboard where they're displayed as separate columns)
+    if (requiredFields.declaration) {
+      total++
+      if (fields.declaration) completed++
+    }
+    if (requiredFields.backgroundCheck) {
+      total++
+      if (backgroundCheck?.status === 'completed' || backgroundCheck?.status === 'manual_clear') completed++
+    }
+  } else {
+    // Count as ONE step (for Admin Dashboard - both must be complete if both required)
+    if (requiredFields.declaration || requiredFields.backgroundCheck) {
+      total++
+      const declarationComplete = !requiredFields.declaration || fields.declaration
+      const bgCheckComplete = !requiredFields.backgroundCheck || (backgroundCheck?.status === 'completed' || backgroundCheck?.status === 'manual_clear')
 
-    if (debug) console.log('[Progress Debug 170696784] Decl/BG: decl=' + declarationComplete + ', bg=' + bgCheckComplete)
+      if (debug) console.log('[Progress Debug 170696784] Decl/BG: decl=' + declarationComplete + ', bg=' + bgCheckComplete)
 
-    // Both must be complete (if required)
-    if (declarationComplete && bgCheckComplete) {
-      completed++
+      // Both must be complete (if required)
+      if (declarationComplete && bgCheckComplete) {
+        completed++
+      }
     }
   }
 
@@ -1694,11 +1708,14 @@ app.get('/api/leader/volunteers/:team', async (req, res) => {
       volunteer.requiredFields = teamRequirements
       volunteer.covenantLevel = teamCovenantLevel
       // Recalculate progress based on single team requirements
+      // Leader Dashboard displays Declaration and BG Check as separate columns, so count them separately
       volunteer.progress = calculateProgress(
         volunteer.fields,
         volunteer.backgroundCheck,
         teamRequirements,
-        teamCovenantLevel
+        teamCovenantLevel,
+        null,
+        { countDeclarationBgSeparately: true }
       )
     })
 
