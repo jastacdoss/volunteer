@@ -148,3 +148,31 @@ export async function updateFile(fileId, updates) {
   await setResources(resources)
   return resources.files[fileIndex]
 }
+
+// Get resources filtered by team
+// Folders and files can have a teamId property for team-specific resources
+export async function getResourcesByTeam(teamId) {
+  const resources = await getResources()
+  return {
+    folders: resources.folders.filter(f => f.teamId === teamId),
+    files: resources.files.filter(f => f.teamId === teamId)
+  }
+}
+
+// ============ Event Registrations ============
+
+// Store parsed registration data for an event
+export async function setEventRegistrations(eventId, registrations) {
+  const client = getRedis()
+  await client.set(`event-registrations:${eventId}`, JSON.stringify({
+    registrations,
+    uploadedAt: new Date().toISOString()
+  }))
+}
+
+// Get registration data for an event
+export async function getEventRegistrations(eventId) {
+  const client = getRedis()
+  const data = await client.get(`event-registrations:${eventId}`)
+  return data ? (typeof data === 'string' ? JSON.parse(data) : data) : null
+}

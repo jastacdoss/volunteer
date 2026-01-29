@@ -4,7 +4,7 @@ import dotenv from 'dotenv'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import { setVolunteer, getVolunteer, getAllVolunteers, clearAllVolunteers, deleteVolunteer, setTeamRequirements, getTeamRequirements, getResources, addFolder, deleteFolder, updateFolder, addFile, deleteFile, updateFile } from './lib/kv.js'
+import { setVolunteer, getVolunteer, getAllVolunteers, clearAllVolunteers, deleteVolunteer, setTeamRequirements, getTeamRequirements, getResources, addFolder, deleteFolder, updateFolder, addFile, deleteFile, updateFile, setEventRegistrations, getEventRegistrations } from './lib/kv.js'
 import { uploadFile, deleteFileFromR2, getDownloadUrl, getUploadUrl } from './lib/r2.js'
 import { makeRequest, getRateLimiterStats, resetRateLimiterStats } from './lib/rate-limiter.js'
 import { FIELD_IDS, FIELD_NAMES } from './config/field-ids.js'
@@ -13,6 +13,115 @@ import { REFERENCES_FORM_FIELDS } from './config/form-field-ids.js'
 // Get __dirname equivalent for ES modules
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
+
+// Helper: Normalize phone number for matching (remove all non-digits)
+function normalizePhone(phone) {
+  if (!phone) return null
+  return phone.replace(/\D/g, '')
+}
+
+// Helper: Parse CSV text and return registration data
+function parseRegistrationCSV(csvContent) {
+  const lines = csvContent.split('\n')
+  if (lines.length < 2) return []
+
+  // Parse header to find column indexes
+  const header = lines[0].split(',')
+  const colIndex = {
+    firstName: header.findIndex(h => h.includes('First Name')),
+    lastName: header.findIndex(h => h.includes('Last Name')),
+    mobilePhone: header.findIndex(h => h.includes('Mobile Phone')),
+    homePhone: header.findIndex(h => h.includes('Home Phone')),
+    email: header.findIndex(h => h.includes('Home Email')),
+    carCategory: header.findIndex(h => h === 'Car Category'),
+    year: header.findIndex(h => h === 'Year'),
+    make: header.findIndex(h => h === 'Make'),
+    model: header.findIndex(h => h === 'Model'),
+    color: header.findIndex(h => h === 'Color')
+  }
+
+  const registrations = []
+
+  // Parse each row
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim()
+    if (!line) continue
+
+    // Simple CSV parsing (handles quoted fields with commas)
+    const values = []
+    let current = ''
+    let inQuotes = false
+
+    for (const char of line) {
+      if (char === '"') {
+        inQuotes = !inQuotes
+      } else if (char === ',' && !inQuotes) {
+        values.push(current.trim())
+        current = ''
+      } else {
+        current += char
+      }
+    }
+    values.push(current.trim())
+
+    const firstName = values[colIndex.firstName] || ''
+    const lastName = values[colIndex.lastName] || ''
+    const mobilePhone = values[colIndex.mobilePhone] || ''
+    const homePhone = values[colIndex.homePhone] || ''
+    const year = values[colIndex.year] || ''
+    const make = values[colIndex.make] || ''
+    const model = values[colIndex.model] || ''
+    const color = values[colIndex.color] || ''
+
+    // Only store entries with car data
+    if (!year && !make && !model && !color) continue
+
+    registrations.push({
+      firstName,
+      lastName,
+      mobilePhone,
+      homePhone,
+      year,
+      make,
+      model,
+      color
+    })
+  }
+
+  return registrations
+}
+
+// Helper: Build lookup maps from registration data
+function buildRegistrationLookups(registrations) {
+  const byPhone = new Map()
+  const byName = new Map()
+
+  for (const reg of registrations) {
+    const carData = {
+      year: reg.year,
+      make: reg.make,
+      model: reg.model,
+      color: reg.color
+    }
+
+    // Index by phone numbers (may have multiple separated by semicolons)
+    const phones = ((reg.mobilePhone || '') + ';' + (reg.homePhone || '')).split(';')
+    for (const phone of phones) {
+      const normalized = normalizePhone(phone)
+      if (normalized && normalized.length >= 10) {
+        byPhone.set(normalized, carData)
+      }
+    }
+
+    // Index by name (lowercase)
+    const nameKey = `${reg.firstName} ${reg.lastName}`.toLowerCase().trim()
+    if (nameKey && nameKey !== ' ') {
+      byName.set(nameKey, carData)
+    }
+  }
+
+  return { byPhone, byName }
+}
 
 // Load team requirements
 const teamRequirements = JSON.parse(
@@ -2767,10 +2876,32 @@ app.get('/api/groups', async (req, res) => {
     const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
     const authHeader = `Basic ${credentials}`
 
-    // Fetch all groups with location included (paginated)
+    // First, fetch tag groups to find the "Neighborhood" tag group ID
+    let neighborhoodTagGroupId = null
+    try {
+      const tagGroupsResponse = await fetch(
+        'https://api.planningcenteronline.com/groups/v2/tag_groups',
+        { headers: { Authorization: authHeader } }
+      )
+      if (tagGroupsResponse.ok) {
+        const tagGroupsData = await tagGroupsResponse.json()
+        const neighborhoodGroup = (tagGroupsData.data || []).find(tg =>
+          tg.attributes.name?.toLowerCase() === 'neighborhood'
+        )
+        if (neighborhoodGroup) {
+          neighborhoodTagGroupId = neighborhoodGroup.id
+          console.log('[Groups API] Found Neighborhood tag group ID:', neighborhoodTagGroupId)
+        }
+      }
+    } catch (e) {
+      console.warn('[Groups API] Could not fetch tag groups:', e.message)
+    }
+
+    // Fetch all groups with location and tags included (paginated)
     let allGroups = []
     let allLocations = new Map()
-    let nextUrl = 'https://api.planningcenteronline.com/groups/v2/groups?include=location&per_page=100&filter=listed'
+    let allTags = new Map()  // Map of tag ID -> { ...attributes, tagGroupId }
+    let nextUrl = 'https://api.planningcenteronline.com/groups/v2/groups?include=location,tags&per_page=100&filter=listed'
 
     while (nextUrl) {
       console.log('[Groups API] Fetching:', nextUrl)
@@ -2790,11 +2921,15 @@ app.get('/api/groups', async (req, res) => {
       const data = await response.json()
       allGroups = allGroups.concat(data.data || [])
 
-      // Collect included locations
+      // Collect included locations and tags
       if (data.included) {
         data.included.forEach(item => {
           if (item.type === 'Location') {
             allLocations.set(item.id, item.attributes)
+          } else if (item.type === 'Tag') {
+            // Store tag attributes along with its tag group ID
+            const tagGroupId = item.relationships?.tag_group?.data?.id
+            allTags.set(item.id, { ...item.attributes, tagGroupId })
           }
         })
       }
@@ -2816,6 +2951,17 @@ app.get('/api/groups', async (req, res) => {
         const hasChildcare = /childcare|child care|\(w\/childcare\)/i.test(name) ||
                             /childcare (is )?available|childcare provided/i.test(description)
 
+        // Get tags for this group and find the Neighborhood tag
+        const tagIds = group.relationships?.tags?.data?.map(t => t.id) || []
+        const groupTags = tagIds.map(id => allTags.get(id)).filter(Boolean)
+
+        // Find tag that belongs to the "Neighborhood" tag group
+        let neighborhoodTag = null
+        if (neighborhoodTagGroupId) {
+          neighborhoodTag = groupTags.find(tag => tag.tagGroupId === neighborhoodTagGroupId)
+        }
+        const neighborhood = neighborhoodTag?.name || null
+
         return {
           id: group.id,
           name,
@@ -2827,6 +2973,8 @@ app.get('/api/groups', async (req, res) => {
           headerImage: group.attributes.header_image?.medium,
           groupTypeId: group.relationships?.group_type?.data?.id,
           hasChildcare,
+          neighborhood,
+          tags: groupTags.map(t => t.name), // Include all tags for debugging/future use
           location: location ? {
             name: location.name,
             address: location.full_formatted_address,
@@ -2863,6 +3011,196 @@ app.get('/api/groups', async (req, res) => {
     })
   } catch (error) {
     console.error('[Groups API] Error:', error)
+    res.status(500).json({
+      error: 'Internal server error',
+      details: error.message
+    })
+  }
+})
+
+// ========================================
+// Event Check-ins API (for Car Show/Chili Cook-Off)
+// ========================================
+
+// POST /api/registrations/:eventId/upload - Upload registration CSV for an event
+app.post('/api/registrations/:eventId/upload', express.text({ type: '*/*', limit: '5mb' }), async (req, res) => {
+  try {
+    const { eventId } = req.params
+    const csvContent = req.body
+
+    if (!csvContent || typeof csvContent !== 'string') {
+      return res.status(400).json({ error: 'CSV content is required' })
+    }
+
+    // Parse the CSV
+    const registrations = parseRegistrationCSV(csvContent)
+
+    // Store in KV
+    await setEventRegistrations(eventId, registrations)
+
+    console.log(`[Registrations] Uploaded ${registrations.length} registrations with car data for event ${eventId}`)
+
+    res.json({
+      success: true,
+      count: registrations.length,
+      message: `Uploaded ${registrations.length} registrations with car data`
+    })
+  } catch (error) {
+    console.error('[Registrations Upload] Error:', error)
+    res.status(500).json({
+      error: 'Failed to upload registrations',
+      details: error.message
+    })
+  }
+})
+
+// GET /api/registrations/:eventId - Get registration info for an event
+app.get('/api/registrations/:eventId', async (req, res) => {
+  try {
+    const { eventId } = req.params
+    const data = await getEventRegistrations(eventId)
+
+    if (!data) {
+      return res.json({ hasRegistrations: false, count: 0 })
+    }
+
+    res.json({
+      hasRegistrations: true,
+      count: data.registrations.length,
+      uploadedAt: data.uploadedAt
+    })
+  } catch (error) {
+    console.error('[Registrations] Error:', error)
+    res.status(500).json({ error: 'Failed to get registrations' })
+  }
+})
+
+// GET /api/checkins/:eventId/:eventPeriodId - Get all check-ins for an event period
+app.get('/api/checkins/:eventId/:eventPeriodId', async (req, res) => {
+  try {
+    const { eventId, eventPeriodId } = req.params
+
+    if (!process.env.PCO_APP_ID || !process.env.PCO_SECRET) {
+      return res.status(500).json({ error: 'PCO credentials not configured' })
+    }
+
+    // Get registration data from KV and build lookups
+    const regData = await getEventRegistrations(eventId)
+    const registrations = regData ? buildRegistrationLookups(regData.registrations) : { byPhone: new Map(), byName: new Map() }
+
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+    const authHeader = `Basic ${credentials}`
+
+    // Fetch check-ins for this event period with person data included
+    // PCO API requires full path: /events/{eventId}/event_periods/{eventPeriodId}/check_ins
+    let allCheckins = []
+    let allPeople = new Map()
+    let allLocations = new Map()
+    let nextUrl = `https://api.planningcenteronline.com/check-ins/v2/events/${eventId}/event_periods/${eventPeriodId}/check_ins?include=person,locations&per_page=100`
+
+    while (nextUrl) {
+      console.log('[Check-ins API] Fetching:', nextUrl)
+      const response = await fetch(nextUrl, {
+        headers: { Authorization: authHeader }
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error('[Check-ins API] Error:', response.status, errorText)
+        return res.status(response.status).json({
+          error: 'PCO API error',
+          status: response.status,
+          details: errorText
+        })
+      }
+
+      const data = await response.json()
+      allCheckins = allCheckins.concat(data.data || [])
+
+      // Collect included people and locations
+      if (data.included) {
+        data.included.forEach(item => {
+          if (item.type === 'Person') {
+            allPeople.set(item.id, item.attributes)
+          } else if (item.type === 'Location') {
+            allLocations.set(item.id, item.attributes)
+          }
+        })
+      }
+
+      nextUrl = data.links?.next || null
+    }
+
+    // Transform to simplified format for frontend
+    const checkins = allCheckins.map(checkin => {
+      const personId = checkin.relationships?.person?.data?.id
+      const person = personId ? allPeople.get(personId) : null
+
+      // Get the location for this check-in to determine category and subCategory
+      const locationIds = checkin.relationships?.locations?.data?.map(l => l.id) || []
+      let category = 'other'
+      let subCategory = null
+
+      for (const locId of locationIds) {
+        const location = allLocations.get(locId)
+        const locName = location?.name || ''
+
+        if (locName.startsWith('CAR SHOW:')) {
+          category = 'car-show'
+          // Extract sub-category: "CAR SHOW: Classic Car" -> "Classic Car"
+          subCategory = locName.replace('CAR SHOW:', '').trim()
+          break
+        } else if (locName.startsWith('CHILI COOK-OFF:')) {
+          category = 'chili-cookoff'
+          // Extract sub-category: "CHILI COOK-OFF: CHILI ENTRY" -> "Chili Entry"
+          subCategory = locName.replace('CHILI COOK-OFF:', '').trim()
+          // Title case the sub-category
+          subCategory = subCategory.split(' ').map(w =>
+            w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+          ).join(' ')
+          break
+        } else if (locName === 'CAR SHOW') {
+          category = 'car-show'
+        } else if (locName === 'CHILI COOK-OFF') {
+          category = 'chili-cookoff'
+        }
+      }
+
+      // Look up car details from CSV registration data
+      const firstName = person?.first_name || checkin.attributes.first_name || ''
+      const lastName = person?.last_name || checkin.attributes.last_name || ''
+      const nameKey = `${firstName} ${lastName}`.toLowerCase().trim()
+
+      // Try to match by name
+      const carData = registrations.byName.get(nameKey)
+
+      return {
+        id: checkin.id,
+        name: person?.name || 'Unknown',
+        firstName,
+        lastName,
+        number: checkin.attributes.number,
+        category,
+        subCategory,
+        checkedInAt: checkin.attributes.created_at,
+        // Car details from CSV registration
+        carYear: carData?.year || null,
+        carMake: carData?.make || null,
+        carModel: carData?.model || null,
+        carColor: carData?.color || null
+      }
+    })
+
+    res.json({
+      checkins,
+      meta: {
+        total: checkins.length,
+        eventId,
+        eventPeriodId
+      }
+    })
+  } catch (error) {
+    console.error('[Check-ins API] Error:', error)
     res.status(500).json({
       error: 'Internal server error',
       details: error.message
@@ -2911,6 +3249,7 @@ if (process.env.NODE_ENV !== 'production') {
 // ============ Resources API ============
 
 // Get all resources (folders and files) - requires authentication
+// Optional query params: teamId (filter by team)
 app.get('/api/resources', async (req, res) => {
   try {
     const authHeader = req.headers.authorization
@@ -2918,7 +3257,17 @@ app.get('/api/resources', async (req, res) => {
       return res.status(401).json({ error: 'Authentication required' })
     }
 
+    const { teamId } = req.query
     const resources = await getResources()
+
+    // If teamId is provided, filter resources by team
+    if (teamId) {
+      return res.json({
+        folders: resources.folders.filter(f => f.teamId === teamId),
+        files: resources.files.filter(f => f.teamId === teamId)
+      })
+    }
+
     res.json(resources)
   } catch (err) {
     console.error('[Resources] Error fetching resources:', err)
@@ -2979,7 +3328,7 @@ app.post('/api/resources/folders', async (req, res) => {
       return res.status(403).json({ error: 'Admin access required' })
     }
 
-    const { name, parentId } = req.body
+    const { name, parentId, teamId } = req.body
 
     if (!name) {
       return res.status(400).json({ error: 'Folder name is required' })
@@ -2989,6 +3338,7 @@ app.post('/api/resources/folders', async (req, res) => {
       id: `folder-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       name,
       parentId: parentId || null,
+      teamId: teamId || null,  // Team association (e.g., 'kids', 'worship', 'lifegroups')
       createdAt: new Date().toISOString(),
       createdBy: userData.data.attributes.name || userData.data.id
     }
@@ -3131,15 +3481,17 @@ app.post('/api/resources/upload-url', async (req, res) => {
       return res.status(403).json({ error: 'Admin access required' })
     }
 
-    const { filename, contentType, folderId, displayName } = req.body
+    const { filename, contentType, folderId, displayName, teamId } = req.body
 
     if (!filename || !contentType) {
       return res.status(400).json({ error: 'Filename and contentType are required' })
     }
 
     // Generate a unique key for the file
+    // Use teamId in path if provided, otherwise use 'lifegroups' for backward compatibility
     const fileId = `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-    const r2Key = `lifegroups/${folderId || 'root'}/${fileId}-${filename}`
+    const teamPath = teamId || 'lifegroups'
+    const r2Key = `${teamPath}/${folderId || 'root'}/${fileId}-${filename}`
 
     // Get signed upload URL
     const uploadUrl = await getUploadUrl(r2Key, contentType)
@@ -3152,6 +3504,7 @@ app.post('/api/resources/upload-url', async (req, res) => {
       displayName: displayName || filename, // Use displayName if provided, otherwise use filename
       contentType,
       folderId: folderId || null,
+      teamId: teamId || null,  // Team association (e.g., 'kids', 'worship', 'lifegroups')
       r2Key,
       createdAt: new Date().toISOString(),
       createdBy: userData.data.attributes.name || userData.data.id
