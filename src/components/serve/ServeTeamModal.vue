@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import type { ServeTeam } from '@/data/serveTeams'
 import ServeIcon from './ServeIcon.vue'
 
 const props = defineProps<{
   team: ServeTeam
+  isEmbed?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'sign-up', team: ServeTeam): void
 }>()
+
+// For embed mode, track scroll position to position modal correctly
+const scrollTop = ref(0)
 
 // Close on escape key
 function handleKeydown(event: KeyboardEvent) {
@@ -22,6 +26,11 @@ function handleKeydown(event: KeyboardEvent) {
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
   document.body.style.overflow = 'hidden'
+
+  // In embed mode, capture current scroll position for absolute positioning
+  if (props.isEmbed) {
+    scrollTop.value = window.scrollY || document.documentElement.scrollTop
+  }
 })
 
 onUnmounted(() => {
@@ -31,9 +40,14 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <!-- In embed mode, use absolute positioning based on scroll; otherwise use fixed -->
   <Teleport to="body">
     <div
-      class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      :class="[
+        'bg-black/50 flex items-center justify-center z-50 p-4',
+        isEmbed ? 'absolute inset-x-0' : 'fixed inset-0'
+      ]"
+      :style="isEmbed ? { top: scrollTop + 'px', minHeight: '100vh' } : undefined"
       @click.self="$emit('close')"
     >
       <div

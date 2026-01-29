@@ -21,6 +21,7 @@ const isAdmin = ref(false)
 const isLeader = ref(false)
 const viewAsMode = ref<{ personId: string; personName: string } | null>(null)
 const mobileMenuOpen = ref(false)
+const showUserMenu = ref(false)
 
 // Main site navigation items (links to WordPress)
 const mainNavItems = [
@@ -41,9 +42,9 @@ const mainNavItems = [
     href: 'https://riverchristian.church/next-steps/',
     children: [
       { label: 'Growth Track', href: 'https://riverchristian.church/next-steps/growth-track/' },
-      { label: 'LifeGroups', href: 'https://riverchristian.church/next-steps/lifegroups/' },
+      { label: 'LifeGroups', href: 'https://riverchristian.church/next-steps/lifegroups' },
       { label: 'Baptism', href: 'https://riverchristian.church/next-steps/baptism/' },
-      { label: 'Serve', href: '/serve' }, // Internal link
+      { label: 'Serve', href: 'https://riverchristian.church/next-steps/serve' },
       { label: 'Prayer', href: 'https://riverchristian.church/next-steps/prayer/' },
     ]
   },
@@ -107,6 +108,14 @@ function toggleMobileMenu() {
   mobileMenuOpen.value = !mobileMenuOpen.value
 }
 
+function toggleUserMenu() {
+  showUserMenu.value = !showUserMenu.value
+}
+
+function closeUserMenu() {
+  showUserMenu.value = false
+}
+
 function isInternalLink(href: string): boolean {
   return href.startsWith('/')
 }
@@ -114,6 +123,14 @@ function isInternalLink(href: string): boolean {
 onMounted(() => {
   loadPermissions()
   checkViewAsMode()
+
+  // Close user menu when clicking outside
+  document.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement
+    if (!target.closest('.user-menu-container')) {
+      closeUserMenu()
+    }
+  })
 })
 </script>
 
@@ -228,12 +245,56 @@ onMounted(() => {
             >
               My Portal
             </router-link>
-            <button
-              @click="handleLogout"
-              class="px-4 py-2 text-sm font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
-            >
-              Logout
-            </button>
+            <!-- User Menu Dropdown -->
+            <div class="relative user-menu-container">
+              <button
+                @click.stop="toggleUserMenu"
+                class="p-2 text-gray-600 hover:text-[#095879] hover:bg-gray-100 rounded-full transition-colors"
+                title="Account menu"
+              >
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+              </button>
+              <!-- Dropdown Menu -->
+              <div
+                v-if="showUserMenu"
+                class="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50"
+              >
+                <a
+                  href="https://riverchristianchurch.churchcenter.com/me/profile-and-household"
+                  target="_blank"
+                  class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                  @click="closeUserMenu"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                  </svg>
+                  Edit Profile
+                </a>
+                <router-link
+                  v-if="isAdmin"
+                  to="/admin"
+                  class="flex items-center gap-3 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                  @click="closeUserMenu"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                  </svg>
+                  Admin
+                </router-link>
+                <button
+                  @click="handleLogout"
+                  class="flex items-center gap-3 w-full px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
+                  </svg>
+                  Logout
+                </button>
+              </div>
+            </div>
           </template>
           <button
             v-else
@@ -330,7 +391,7 @@ onMounted(() => {
               class="text-sm font-medium transition-colors"
               :class="$route.path === '/' ? 'text-[#095879]' : 'text-gray-600 hover:text-gray-900'"
             >
-              My Onboarding
+              My Teams
             </router-link>
             <router-link
               to="/resources"
@@ -346,14 +407,6 @@ onMounted(() => {
               :class="$route.path.startsWith('/leader') ? 'text-[#095879]' : 'text-gray-600 hover:text-gray-900'"
             >
               Leader Dashboard
-            </router-link>
-            <router-link
-              v-if="isAdmin"
-              to="/admin"
-              class="text-sm font-medium transition-colors"
-              :class="$route.path.startsWith('/admin') ? 'text-[#095879]' : 'text-gray-600 hover:text-gray-900'"
-            >
-              Admin
             </router-link>
           </nav>
         </div>

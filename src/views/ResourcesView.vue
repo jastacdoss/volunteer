@@ -8,6 +8,7 @@ interface Folder {
   id: string
   name: string
   parentId: string | null
+  teamId: string | null
   createdAt: string
   createdBy: string
 }
@@ -18,9 +19,15 @@ interface FileItem {
   displayName: string
   contentType: string
   folderId: string | null
+  teamId: string | null
   r2Key: string
   createdAt: string
   createdBy: string
+}
+
+interface Team {
+  key: string
+  name: string
 }
 
 const router = useRouter()
@@ -32,6 +39,19 @@ const folders = ref<Folder[]>([])
 const files = ref<FileItem[]>([])
 const currentFolderId = ref<string | null>(null)
 const error = ref<string | null>(null)
+const selectedTeamId = ref<string>('lifegroups')  // Default to lifegroups for backward compatibility
+
+// Available teams for the dropdown
+const availableTeams: Team[] = [
+  { key: 'lifegroups', name: 'Life Groups' },
+  { key: 'kids', name: 'Kids Ministry' },
+  { key: 'students', name: 'Student Ministry' },
+  { key: 'worship', name: 'Worship Team' },
+  { key: 'production', name: 'Production Team' },
+  { key: 'connect', name: 'Connect Team' },
+  { key: 'care', name: 'Care Ministry' },
+  { key: 'outreach', name: 'Outreach' },
+]
 
 // Upload state
 const showUploadModal = ref(false)
@@ -78,9 +98,15 @@ const currentFiles = computed(() => {
     .sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name))
 })
 
+// Get current team's display name
+const currentTeamName = computed(() => {
+  const team = availableTeams.find(t => t.key === selectedTeamId.value)
+  return team ? team.name : 'Resources'
+})
+
 // Breadcrumb navigation
 const breadcrumbs = computed(() => {
-  const crumbs: { id: string | null, name: string }[] = [{ id: null, name: 'Life Group Materials' }]
+  const crumbs: { id: string | null, name: string }[] = [{ id: null, name: currentTeamName.value }]
 
   if (currentFolderId.value) {
     let folder = folders.value.find(f => f.id === currentFolderId.value)
@@ -102,7 +128,12 @@ async function fetchResources() {
   if (!session) return
 
   try {
-    const response = await fetch('/api/resources', {
+    // Include teamId filter in the request
+    const url = selectedTeamId.value
+      ? `/api/resources?teamId=${encodeURIComponent(selectedTeamId.value)}`
+      : '/api/resources'
+
+    const response = await fetch(url, {
       headers: { Authorization: `Bearer ${session.token}` }
     })
 
@@ -114,6 +145,12 @@ async function fetchResources() {
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Failed to load resources'
   }
+}
+
+// Handle team change - reset folder navigation and fetch resources
+async function handleTeamChange() {
+  currentFolderId.value = null  // Reset to root
+  await fetchResources()
 }
 
 async function downloadFile(file: FileItem) {
@@ -153,7 +190,8 @@ async function createFolder() {
       },
       body: JSON.stringify({
         name: newFolderName.value.trim(),
-        parentId: currentFolderId.value
+        parentId: currentFolderId.value,
+        teamId: selectedTeamId.value
       })
     })
 
@@ -199,7 +237,8 @@ async function performUpload() {
         filename: uploadFile.value.name,
         contentType: uploadFile.value.type || 'application/octet-stream',
         folderId: currentFolderId.value,
-        displayName: uploadDisplayName.value.trim() || uploadFile.value.name
+        displayName: uploadDisplayName.value.trim() || uploadFile.value.name,
+        teamId: selectedTeamId.value
       })
     })
 
@@ -462,30 +501,47 @@ onMounted(async () => {
       <!-- Header -->
       <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
-          <h1 class="text-2xl font-bold text-gray-900">Life Group Study Materials</h1>
-          <p class="text-gray-600 mt-1">Download study materials and resources for your Life Group.</p>
+          <h1 class="text-2xl font-bold text-gray-900">Volunteer Resources</h1>
+          <p class="text-gray-600 mt-1">Download study materials and resources for your team.</p>
         </div>
 
         <!-- Admin Actions -->
-        <div v-if="isAdmin" class="flex gap-2">
-          <button
-            @click="showFolderModal = true"
-            class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2"
-          >
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
-            </svg>
-            New Folder
-          </button>
-          <button
-            @click="showUploadModal = true"
-            class="px-4 py-2 bg-[#095879] text-white rounded-lg hover:bg-[#074863] transition-colors flex items-center gap-2"
-          >
-            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-            </svg>
-            Upload File
-          </button>
+        <div v-if="isAdmin" class="flex flex-wrap items-center gap-3">
+          <!-- Team Selector -->
+          <div class="flex items-center gap-2">
+            <label for="team-select" class="text-sm font-medium text-gray-700">Team:</label>
+            <select
+              id="team-select"
+              v-model="selectedTeamId"
+              @change="handleTeamChange"
+              class="px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-[#095879] focus:border-transparent"
+            >
+              <option v-for="team in availableTeams" :key="team.key" :value="team.key">
+                {{ team.name }}
+              </option>
+            </select>
+          </div>
+
+          <div class="flex gap-2">
+            <button
+              @click="showFolderModal = true"
+              class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2"
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+              </svg>
+              New Folder
+            </button>
+            <button
+              @click="showUploadModal = true"
+              class="px-4 py-2 bg-[#095879] text-white rounded-lg hover:bg-[#074863] transition-colors flex items-center gap-2"
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+              </svg>
+              Upload File
+            </button>
+          </div>
         </div>
       </div>
 

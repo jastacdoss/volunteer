@@ -20,6 +20,8 @@ interface Group {
   headerImage: string | null
   groupTypeId: string
   hasChildcare: boolean
+  neighborhood: string | null
+  tags: string[]
   location: GroupLocation | null
 }
 
@@ -38,8 +40,13 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
-// Get location display text
+// Get location display text - prefer neighborhood tag
 function getLocationText(): string {
+  // Prefer neighborhood tag if available
+  if (props.group.neighborhood) {
+    return props.group.neighborhood
+  }
+
   const loc = props.group.location
   if (!loc) {
     const match = props.group.description?.match(/Meeting Area:\s*([^\n]+)/i)

@@ -18,6 +18,8 @@ interface Group {
   headerImage: string | null
   groupTypeId: string
   hasChildcare: boolean
+  neighborhood: string | null
+  tags: string[]
   location: GroupLocation | null
 }
 
@@ -29,8 +31,13 @@ defineEmits<{
   (e: 'click'): void
 }>()
 
-// Get location display text (respects privacy settings)
+// Get location display text - prefer neighborhood tag, then location
 function getLocationText(group: Group): string {
+  // Prefer neighborhood tag if available
+  if (group.neighborhood) {
+    return group.neighborhood
+  }
+
   if (!group.location) {
     // Try to extract from description
     const match = group.description?.match(/Meeting Area:\s*([^\n]+)/i)

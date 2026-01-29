@@ -26,6 +26,8 @@ interface Group {
   headerImage: string | null
   groupTypeId: string
   hasChildcare: boolean
+  neighborhood: string | null
+  tags: string[]
   location: GroupLocation | null
 }
 

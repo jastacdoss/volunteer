@@ -5,6 +5,7 @@ import { loadTeamRequirements, getRequiredSteps, getCovenantLevel, getTeamDispla
 import OnboardingSteps from '@/components/OnboardingSteps.vue'
 import AdditionalRequirements from '@/components/AdditionalRequirements.vue'
 import AppHeader from '@/components/AppHeader.vue'
+import TeamResources from '@/components/TeamResources.vue'
 
 // Environment variables for training validity periods
 const CHILD_SAFETY_TRAINING_VALID_YEARS = Number(import.meta.env.VITE_CHILD_SAFETY_TRAINING_VALID_YEARS || 2)
@@ -53,6 +54,7 @@ const selectedTab = ref<string | null>(null)
 const backgroundChecks = ref<any[]>([])
 let refreshInterval: ReturnType<typeof setInterval> | null = null
 let isRefreshing = ref(false)
+const welcomeExpanded = ref(true)
 
 /**
  * Helper function to check if a date is within X years
@@ -648,6 +650,14 @@ onMounted(async () => {
 
   isLoading.value = false
 
+  // Check if user has viewed welcome info before
+  const hasViewedWelcome = localStorage.getItem('rcc-welcome-viewed')
+  if (hasViewedWelcome) {
+    welcomeExpanded.value = false
+  } else {
+    localStorage.setItem('rcc-welcome-viewed', 'true')
+  }
+
   // Set up automatic background refresh every 10 seconds
   refreshInterval = setInterval(async () => {
     console.log('🔄 Auto-refreshing user data...')
@@ -668,6 +678,42 @@ function handleLogin() {
 
 function handleLogout() {
   logout()
+}
+
+function toggleWelcome() {
+  welcomeExpanded.value = !welcomeExpanded.value
+}
+
+/**
+ * Normalize a team name to a resource team ID
+ * Maps PCO team names to the keys used in the resources system
+ */
+function getResourceTeamId(teamName: string): string {
+  const normalized = teamName.toLowerCase().replace(/\s+/g, '-')
+
+  // Map common variations to standard resource team IDs
+  const teamMap: Record<string, string> = {
+    'life-group': 'lifegroups',
+    'lifegroup': 'lifegroups',
+    'life-groups': 'lifegroups',
+    'kids': 'kids',
+    'kids-ministry': 'kids',
+    'kids-check-in': 'kids',
+    'e3-(thursday-night-kids)': 'kids',
+    'students': 'students',
+    'student-ministry': 'students',
+    'worship': 'worship',
+    'worship-team': 'worship',
+    'production': 'production',
+    'production-team': 'production',
+    'connect': 'connect',
+    'connect-team': 'connect',
+    'care': 'care',
+    'care-ministry': 'care',
+    'outreach': 'outreach',
+  }
+
+  return teamMap[normalized] || normalized
 }
 
 async function handleMarkSubmitted(step: Step) {
@@ -738,65 +784,82 @@ async function handleMarkSubmitted(step: Step) {
     <!-- Main Content -->
     <main class="max-w-5xl mx-auto px-6 py-12">
       <!-- Welcome Section -->
-      <div class="bg-white rounded-2xl shadow-lg p-8 mb-8 border border-gray-100">
-        <div class="flex items-center justify-between mb-4">
+      <div class="bg-white rounded-2xl shadow-lg border border-gray-100 mb-8 overflow-hidden">
+        <!-- Always visible header -->
+        <div class="flex items-center justify-between p-8 pb-4">
           <h2 class="text-3xl font-bold text-gray-900">
             Hello, {{ userName }}!
           </h2>
-          <a
-            href="https://riverchristianchurch.churchcenter.com/me/profile-and-household"
-            target="_blank"
-            class="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors"
+          <button
+            @click="toggleWelcome"
+            class="inline-flex items-center gap-2 px-4 py-2 text-blue-600 hover:text-blue-700 font-medium rounded-lg hover:bg-blue-50 transition-colors"
           >
+            <!-- Info circle icon -->
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
             </svg>
-            Edit Profile
-          </a>
+            {{ welcomeExpanded ? 'Hide Info' : 'Get More Info' }}
+            <!-- Chevron icon (rotates based on state) -->
+            <svg
+              class="w-4 h-4 transition-transform duration-300"
+              :class="{ 'rotate-180': welcomeExpanded }"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+            </svg>
+          </button>
         </div>
-        <div class="prose prose-lg max-w-none text-gray-700">
-          <p class="mb-4">
-            Thank you for taking the necessary steps to getting involved at RCC. Your time and service are so appreciated and because of volunteers like you, we are able to reach more for Christ. Below you can see the team(s) you have volunteered to serve on and the steps required to get started. If you have any issues along the way feel free to reach out to one of our <a href="mailto:admin@riverchristian.church" class="text-blue-600 hover:text-blue-700 underline">admins</a>.
-          </p>
-          <p class="mb-6">
-            RCC utilizes Planning Center for scheduling, communication, and other administrative tasks. To complete the onboarding steps below, you will need to create an account. Once added to a serve team, you can view your schedule and update your block-out dates. You will be required to login twice as part of the process - once to Planning Center and once to Church Center. Both sites use the same email/phone but the login process is slightly different as detailed below.
-          </p>
 
-          <!-- Login Cards -->
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 not-prose">
-            <!-- Planning Center Login Card -->
-            <div class="bg-gradient-to-br from-blue-50 to-blue-100 border-2 border-blue-200 rounded-xl p-6 shadow-sm">
-              <div class="flex items-start gap-3 mb-3">
-                <svg class="w-6 h-6 text-blue-600 mt-1 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
-                </svg>
-                <h4 class="text-lg font-bold text-blue-900">Planning Center Login</h4>
-              </div>
-              <p class="text-sm text-gray-700">
-                Traditional username and password login. You completed this login to get to this page.
+        <!-- Collapsible content -->
+        <Transition name="collapse">
+          <div v-show="welcomeExpanded" class="px-8 pb-8">
+            <div class="prose prose-lg max-w-none text-gray-700">
+              <p class="mb-4">
+                Below you can see the team(s) you are already serving on and teams you have volunteered for. Teams without a checkmark icon require additional steps to complete the onboarding process.
               </p>
-            </div>
+              <p class="mb-6">
+                RCC utilizes Planning Center for scheduling, communication, and other administrative tasks. To view your schedule and update your block-out dates, you can visit <a href="https://services.planningcenteronline.com" target="_blank" class="text-blue-600 hover:text-blue-700 underline">Services</a>. To view and update your profile and members of your household, and complete the onboarding process, you will need to log into <a href="https://riverchristianchurch.churchcenter.com" target="_blank" class="text-blue-600 hover:text-blue-700 underline">Church Center</a>. This is a different login process than you used to access this site. Both sites use the same email/phone but require slightly different steps to login.
+              </p>
 
-            <!-- Church Center Login Card -->
-            <div class="bg-gradient-to-br from-green-50 to-green-100 border-2 border-green-200 rounded-xl p-6 shadow-sm">
-              <div class="flex items-start gap-3 mb-3">
-                <svg class="w-6 h-6 text-green-600 mt-1 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
-                </svg>
-                <h4 class="text-lg font-bold text-green-900">Church Center Login</h4>
+              <!-- Login Cards -->
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4 not-prose">
+                <!-- Planning Center Login Card -->
+                <div class="bg-gradient-to-br from-blue-50 to-blue-100 border-2 border-blue-200 rounded-xl p-6 shadow-sm">
+                  <div class="flex items-start gap-3 mb-3">
+                    <svg class="w-6 h-6 text-blue-600 mt-1 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+                    </svg>
+                    <h4 class="text-lg font-bold text-blue-900">Planning Center Login</h4>
+                  </div>
+                  <p class="text-sm text-gray-700">
+                    Traditional username and password login. You completed this login to get to this page.
+                  </p>
+                </div>
+
+                <!-- Church Center Login Card -->
+                <div class="bg-gradient-to-br from-green-50 to-green-100 border-2 border-green-200 rounded-xl p-6 shadow-sm">
+                  <div class="flex items-start gap-3 mb-3">
+                    <svg class="w-6 h-6 text-green-600 mt-1 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+                    </svg>
+                    <h4 class="text-lg font-bold text-green-900">Church Center Login</h4>
+                  </div>
+                  <p class="text-sm text-gray-700 mb-3">
+                    Church Center is accessible to anyone at RCC who has ever checked in a child/student, registered for an event or group, or donated online. This login uses the same email/phone as Planning Center, but instead of a traditional password, you will be emailed/texted a six-digit code to gain access.
+                  </p>
+                  <p class="text-sm text-gray-700">
+                    You will need to login to Church Center to update your profile information and complete any required forms below.
+                  </p>
+                </div>
               </div>
-              <p class="text-sm text-gray-700 mb-3">
-                Church Center is accessible to anyone at RCC who has ever checked in a child/student, registered for an event or group, or donated online. This login uses the same email/phone as Planning Center, but instead of a traditional password, you will be emailed/texted a six-digit code to gain access.
-              </p>
-              <p class="text-sm text-gray-700">
-                You will need to login to Church Center to update your profile information and complete any required forms below.
-              </p>
             </div>
           </div>
-        </div>
+        </Transition>
 
         <!-- Show active teams (when no tabs) -->
-        <div v-if="activeTeams.length > 0 && allTeams.length <= 1" class="mt-6 p-4 bg-blue-50 rounded-lg">
+        <div v-if="activeTeams.length > 0 && allTeams.length <= 1" class="mx-8 mb-8 p-4 bg-blue-50 rounded-lg">
           <h3 class="text-sm font-semibold text-blue-900 mb-2">Onboarding For:</h3>
           <div class="flex flex-wrap gap-2">
             <span
@@ -810,7 +873,7 @@ async function handleMarkSubmitted(step: Step) {
         </div>
 
         <!-- No teams selected -->
-        <div v-else-if="activeTeams.length === 0 && completedTeams.length === 0" class="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+        <div v-else-if="activeTeams.length === 0 && completedTeams.length === 0" class="mx-8 mb-8 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
           <p class="text-yellow-800 font-medium">
             No teams selected for onboarding. Please contact the church office to get started.
           </p>
@@ -879,6 +942,12 @@ async function handleMarkSubmitted(step: Step) {
           <div v-if="additionalRequirements.length > 0" class="mb-12">
             <AdditionalRequirements :requirements="additionalRequirements" />
           </div>
+
+          <!-- Team Resources -->
+          <div v-if="selectedTab" class="mt-8">
+            <h3 class="text-xl font-bold text-gray-900 mb-4">Resources</h3>
+            <TeamResources :team-id="getResourceTeamId(selectedTab)" />
+          </div>
         </div>
       </div>
 
@@ -918,6 +987,12 @@ async function handleMarkSubmitted(step: Step) {
         <div v-if="additionalRequirements.length > 0" class="mb-12">
           <AdditionalRequirements :requirements="additionalRequirements" />
         </div>
+
+        <!-- Team Resources (for single team view) -->
+        <div v-if="activeTeams.length > 0" class="mt-8">
+          <h3 class="text-xl font-bold text-gray-900 mb-4">Resources</h3>
+          <TeamResources :team-id="getResourceTeamId(activeTeams[0]!)" />
+        </div>
       </div>
 
       <!-- Footer Contact -->
@@ -935,3 +1010,26 @@ async function handleMarkSubmitted(step: Step) {
     </main>
   </div>
 </template>
+
+<style scoped>
+/* Collapse transition for welcome info section */
+.collapse-enter-active,
+.collapse-leave-active {
+  transition: all 0.3s ease;
+  overflow: hidden;
+}
+
+.collapse-enter-from,
+.collapse-leave-to {
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.collapse-enter-to,
+.collapse-leave-from {
+  opacity: 1;
+  max-height: 600px;
+}
+</style>

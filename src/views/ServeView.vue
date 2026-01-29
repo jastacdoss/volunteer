@@ -6,12 +6,12 @@ import FindYourFitHero from '@/components/shared/FindYourFitHero.vue'
 import ServeCategoryNav from '@/components/serve/ServeCategoryNav.vue'
 import ServeCategorySection from '@/components/serve/ServeCategorySection.vue'
 import ServeTeamModal from '@/components/serve/ServeTeamModal.vue'
-import ServePCFormModal from '@/components/serve/ServePCFormModal.vue'
 import ServeQuizCTA from '@/components/serve/ServeQuizCTA.vue'
 import {
   SERVE_CATEGORIES,
   SERVE_TEAMS,
   getTeamsByCategory,
+  PC_SERVE_FORM_URL,
   type ServeTeam,
   type ServeCategory,
   type TeamCategory,
@@ -25,8 +25,6 @@ const isEmbed = computed(() => route.query.embed === 'true')
 // State
 const activeCategory = ref<TeamCategory | null>(null)
 const selectedTeam = ref<ServeTeam | null>(null)
-const showSignUpModal = ref(false)
-const signUpTeam = ref<ServeTeam | null>(null)
 
 // Category refs for scroll tracking
 const categoryRefs = ref<Record<string, HTMLElement | null>>({})
@@ -64,22 +62,15 @@ function handleTeamSelect(team: ServeTeam) {
   selectedTeam.value = team
 }
 
-// Handle sign up click
+// Handle sign up click - redirect directly to Church Center form
 function handleSignUp(team: ServeTeam) {
-  signUpTeam.value = team
-  showSignUpModal.value = true
   selectedTeam.value = null // Close details modal if open
+  window.open(PC_SERVE_FORM_URL, '_blank', 'noopener,noreferrer')
 }
 
 // Close team modal
 function closeTeamModal() {
   selectedTeam.value = null
-}
-
-// Close sign up modal
-function closeSignUpModal() {
-  showSignUpModal.value = false
-  signUpTeam.value = null
 }
 
 // Track active category on scroll
@@ -201,15 +192,9 @@ onUnmounted(() => {
     <ServeTeamModal
       v-if="selectedTeam"
       :team="selectedTeam"
+      :is-embed="isEmbed"
       @close="closeTeamModal"
       @sign-up="handleSignUp"
-    />
-
-    <!-- Planning Center Sign Up Modal -->
-    <ServePCFormModal
-      v-if="showSignUpModal"
-      :team="signUpTeam"
-      @close="closeSignUpModal"
     />
   </div>
 </template>
