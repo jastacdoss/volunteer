@@ -301,14 +301,14 @@ function calculateProgress(fields, backgroundCheck, requiredFields, covenantLeve
     }
     if (requiredFields.backgroundCheck) {
       total++
-      if (backgroundCheck?.status === 'completed' || backgroundCheck?.status === 'manual_clear') completed++
+      if (backgroundCheck?.status === 'completed' || backgroundCheck?.status === 'complete_clear' || backgroundCheck?.status === 'manual_clear') completed++
     }
   } else {
     // Count as ONE step (for Admin Dashboard - both must be complete if both required)
     if (requiredFields.declaration || requiredFields.backgroundCheck) {
       total++
       const declarationComplete = !requiredFields.declaration || fields.declaration
-      const bgCheckComplete = !requiredFields.backgroundCheck || (backgroundCheck?.status === 'completed' || backgroundCheck?.status === 'manual_clear')
+      const bgCheckComplete = !requiredFields.backgroundCheck || (backgroundCheck?.status === 'completed' || backgroundCheck?.status === 'complete_clear' || backgroundCheck?.status === 'manual_clear')
 
       if (debug) console.log('[Progress Debug 170696784] Decl/BG: decl=' + declarationComplete + ', bg=' + bgCheckComplete)
 
@@ -1703,6 +1703,9 @@ app.get('/api/leader/volunteers/:team', async (req, res) => {
     const teamRequirements = getRequiredFields([team])
     const teamCovenantLevel = getRequiredCovenantLevel([team])
 
+    console.log(`[Leader/${team}] teamRequirements:`, teamRequirements)
+    console.log(`[Leader/${team}] teamCovenantLevel:`, teamCovenantLevel)
+
     teamVolunteers.forEach(volunteer => {
       // Override cached requirements with team-specific requirements
       volunteer.requiredFields = teamRequirements
@@ -1717,6 +1720,15 @@ app.get('/api/leader/volunteers/:team', async (req, res) => {
         null,
         { countDeclarationBgSeparately: true }
       )
+
+      // Debug logging for Connect team
+      if (team === 'Connect') {
+        console.log(`[Leader/Connect] ${volunteer.name}:`)
+        console.log(`  fields.declaration: ${volunteer.fields?.declaration}`)
+        console.log(`  backgroundCheck: ${JSON.stringify(volunteer.backgroundCheck)}`)
+        console.log(`  fields.publicPresence: ${volunteer.fields?.publicPresence}`)
+        console.log(`  progress: ${volunteer.progress.completed}/${volunteer.progress.total}`)
+      }
     })
 
     // Sort volunteers by last name (or full name as fallback)
@@ -2371,20 +2383,31 @@ app.post('/api/admin/complete-onboarding', async (req, res) => {
       console.log(`[Complete Onboarding] Team "${team}" already in Completed - skipping POST`)
     }
 
-    // Clear Redis cache for this volunteer
-    console.log(`[Complete Onboarding] Attempting to delete volunteer:${personId} from Redis`)
-    const deleteResult = await deleteVolunteer(personId)
-    console.log(`[Complete Onboarding] Redis deletion result: ${deleteResult} (1=success, 0=key didn't exist)`)
+    // Check if volunteer still has other teams in progress
+    const remainingInProgressTeams = inProgressTeams.filter(t => t !== team)
+    console.log(`[Complete Onboarding] Remaining In Progress teams after completing "${team}":`, remainingInProgressTeams)
 
-    // Verify deletion
-    const verification = await getVolunteer(personId)
-    if (verification) {
-      console.error(`[Complete Onboarding] WARNING: volunteer:${personId} still exists in Redis after deletion!`)
+    if (remainingInProgressTeams.length > 0) {
+      // Volunteer still has other teams to complete - re-sync to update their data
+      console.log(`[Complete Onboarding] Re-syncing volunteer ${personId} (still has ${remainingInProgressTeams.length} teams in progress)`)
+      await syncSingleVolunteer(personId)
+      console.log(`[Complete Onboarding] Re-sync complete for ${personId}`)
     } else {
-      console.log(`[Complete Onboarding] Verified: volunteer:${personId} successfully removed from Redis`)
+      // No more teams in progress - remove from Redis cache entirely
+      console.log(`[Complete Onboarding] Attempting to delete volunteer:${personId} from Redis (no teams remaining)`)
+      const deleteResult = await deleteVolunteer(personId)
+      console.log(`[Complete Onboarding] Redis deletion result: ${deleteResult} (1=success, 0=key didn't exist)`)
+
+      // Verify deletion
+      const verification = await getVolunteer(personId)
+      if (verification) {
+        console.error(`[Complete Onboarding] WARNING: volunteer:${personId} still exists in Redis after deletion!`)
+      } else {
+        console.log(`[Complete Onboarding] Verified: volunteer:${personId} successfully removed from Redis`)
+      }
     }
 
-    res.json({ success: true, personId })
+    res.json({ success: true, personId, remainingTeams: remainingInProgressTeams })
   } catch (error) {
     console.error('Complete onboarding error:', error)
     res.status(500).json({ error: 'Internal server error' })
