@@ -1684,6 +1684,24 @@ app.get('/api/leader/volunteers/:team', async (req, res) => {
       volunteer.teams && volunteer.teams.includes(team)
     )
 
+    // Recalculate requirements for THIS team only (not all volunteer teams)
+    // This ensures the Leader Dashboard shows correct progress for the team being viewed
+    const teamRequirements = getRequiredFields([team])
+    const teamCovenantLevel = getRequiredCovenantLevel([team])
+
+    teamVolunteers.forEach(volunteer => {
+      // Override cached requirements with team-specific requirements
+      volunteer.requiredFields = teamRequirements
+      volunteer.covenantLevel = teamCovenantLevel
+      // Recalculate progress based on single team requirements
+      volunteer.progress = calculateProgress(
+        volunteer.fields,
+        volunteer.backgroundCheck,
+        teamRequirements,
+        teamCovenantLevel
+      )
+    })
+
     // Sort volunteers by last name (or full name as fallback)
     teamVolunteers.sort((a, b) => {
       const aName = a.lastName || a.name
@@ -2256,145 +2274,48 @@ app.post('/api/admin/complete-onboarding', async (req, res) => {
 
     const fieldDataResult = await fieldDataResponse.json()
 
-    // Get current values using field IDs from config
-    const inProgressField = fieldDataResult.data?.find(
+    // PCO multi-select fields store MULTIPLE FieldDatum records (one per selected option)
+    // Use .filter() to get ALL entries, not .find() which only gets one
+    const inProgressEntries = fieldDataResult.data?.filter(
       item => item.relationships?.field_definition?.data?.id === FIELD_IDS.onboardingInProgressFor
-    )
-    const completedField = fieldDataResult.data?.find(
+    ) || []
+    const completedEntries = fieldDataResult.data?.filter(
       item => item.relationships?.field_definition?.data?.id === FIELD_IDS.onboardingCompleted
-    )
+    ) || []
 
-    const currentInProgressValue = inProgressField?.attributes?.value
-    const currentCompletedValue = completedField?.attributes?.value
-
-    // Parse multi-select values - PCO stores them as comma-separated strings
-    const parseMultiSelect = (value) => {
-      if (!value) return []
-      if (Array.isArray(value)) return value
-      if (typeof value === 'string') {
-        // Check if it's a JSON string
-        if (value.startsWith('[')) {
-          try {
-            return JSON.parse(value)
-          } catch {
-            return value.split(',').map(v => v.trim())
-          }
-        }
-        return value.split(',').map(v => v.trim())
-      }
-      return [value]
-    }
-
-    const inProgressTeams = parseMultiSelect(currentInProgressValue)
-    const completedTeams = parseMultiSelect(currentCompletedValue)
+    // Extract current values from entries
+    const inProgressTeams = inProgressEntries.map(e => e.attributes?.value).filter(Boolean)
+    const completedTeams = completedEntries.map(e => e.attributes?.value).filter(Boolean)
 
     console.log(`[Complete Onboarding] Person: ${personId}, Team: ${team}`)
-    console.log(`[Complete Onboarding] Current In Progress: ${JSON.stringify(inProgressTeams)}`)
-    console.log(`[Complete Onboarding] Current Completed: ${JSON.stringify(completedTeams)}`)
+    console.log(`[Complete Onboarding] In Progress entries:`, inProgressEntries.map(e => ({ id: e.id, value: e.attributes?.value })))
+    console.log(`[Complete Onboarding] Completed entries:`, completedEntries.map(e => ({ id: e.id, value: e.attributes?.value })))
 
-    // Remove from in progress
-    const newInProgress = inProgressTeams.filter(t => t !== team)
-    console.log(`[Complete Onboarding] New In Progress after filter: ${JSON.stringify(newInProgress)}`)
-
-    // Add to completed if not already there
-    if (!completedTeams.includes(team)) {
-      completedTeams.push(team)
-    }
-    console.log(`[Complete Onboarding] New Completed: ${JSON.stringify(completedTeams)}`)
-
-    // Format values for PCO - multi-select fields expect comma-separated strings, null to clear, or empty string
-    const formatMultiSelect = (teams) => {
-      if (teams.length === 0) return null  // Try null instead of empty string to clear
-      return teams.join(',')
-    }
-
-    const inProgressValue = formatMultiSelect(newInProgress)
-    const completedValue = formatMultiSelect(completedTeams)
-    console.log(`[Complete Onboarding] Sending In Progress value: ${JSON.stringify(inProgressValue)}`)
-    console.log(`[Complete Onboarding] Sending Completed value: ${JSON.stringify(completedValue)}`)
-
-    // Update In Progress field - DELETE if empty, PATCH if has values
-    if (inProgressField) {
-      if (inProgressValue === null) {
-        // To uncheck/clear a multi-select field, DELETE the field_datum
-        const response = await fetch(
-          `https://api.planningcenteronline.com/people/v2/field_data/${inProgressField.id}`,
-          {
-            method: 'DELETE',
-            headers: {
-              Authorization: `Basic ${credentials}`,
-            },
-          }
-        )
-        console.log(`[Complete Onboarding] In Progress DELETE status: ${response.status}`)
-        if (!response.ok) {
-          const errorText = await response.text()
-          console.error(`[Complete Onboarding] In Progress DELETE failed: ${errorText}`)
-          throw new Error(`Failed to DELETE In Progress field: ${response.status} - ${errorText}`)
-        }
-        console.log(`[Complete Onboarding] In Progress field deleted successfully`)
-      } else {
-        // PATCH to update with new value
-        const response = await fetch(
-          `https://api.planningcenteronline.com/people/v2/field_data/${inProgressField.id}`,
-          {
-            method: 'PATCH',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Basic ${credentials}`,
-            },
-            body: JSON.stringify({
-              data: {
-                type: 'FieldDatum',
-                id: inProgressField.id,
-                attributes: {
-                  value: inProgressValue,
-                },
-              },
-            }),
-          }
-        )
-        console.log(`[Complete Onboarding] In Progress PATCH status: ${response.status}`)
-        if (!response.ok) {
-          const errorText = await response.text()
-          console.error(`[Complete Onboarding] In Progress PATCH failed: ${errorText}`)
-          throw new Error(`Failed to PATCH In Progress field: ${response.status} - ${errorText}`)
-        }
-        const responseData = await response.json()
-        console.log(`[Complete Onboarding] In Progress PATCH successful, new value: ${JSON.stringify(responseData.data?.attributes?.value)}`)
-      }
-    }
-
-    if (completedField) {
+    // Step 1: REMOVE from "In Progress" - DELETE the specific FieldDatum entry for this team
+    const entryToRemove = inProgressEntries.find(e => e.attributes?.value === team)
+    if (entryToRemove) {
       const response = await fetch(
-        `https://api.planningcenteronline.com/people/v2/field_data/${completedField.id}`,
+        `https://api.planningcenteronline.com/people/v2/field_data/${entryToRemove.id}`,
         {
-          method: 'PATCH',
+          method: 'DELETE',
           headers: {
-            'Content-Type': 'application/json',
             Authorization: `Basic ${credentials}`,
           },
-          body: JSON.stringify({
-            data: {
-              type: 'FieldDatum',
-              id: completedField.id,
-              attributes: {
-                value: completedValue,
-              },
-            },
-          }),
         }
       )
-      console.log(`[Complete Onboarding] Completed PATCH status: ${response.status}`)
+      console.log(`[Complete Onboarding] DELETE In Progress entry ${entryToRemove.id} (${team}): ${response.status}`)
       if (!response.ok) {
         const errorText = await response.text()
-        console.error(`[Complete Onboarding] Completed PATCH failed: ${errorText}`)
-        throw new Error(`Failed to PATCH Completed field: ${response.status} - ${errorText}`)
+        console.error(`[Complete Onboarding] DELETE In Progress failed: ${errorText}`)
+        throw new Error(`Failed to DELETE In Progress entry: ${response.status} - ${errorText}`)
       }
-      const responseData = await response.json()
-      console.log(`[Complete Onboarding] Completed PATCH successful, new value: ${JSON.stringify(responseData.data?.attributes?.value)}`)
     } else {
-      // Create new completed field
+      console.log(`[Complete Onboarding] No In Progress entry found for team "${team}" - nothing to remove`)
+    }
+
+    // Step 2: ADD to "Completed" - POST a new FieldDatum entry for this team (if not already there)
+    const alreadyCompleted = completedEntries.some(e => e.attributes?.value === team)
+    if (!alreadyCompleted) {
       const response = await fetch(
         `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data`,
         {
@@ -2407,7 +2328,7 @@ app.post('/api/admin/complete-onboarding', async (req, res) => {
             data: {
               type: 'FieldDatum',
               attributes: {
-                value: completedValue,
+                value: team,  // Single value - one entry per selected option
               },
               relationships: {
                 field_definition: {
@@ -2421,14 +2342,16 @@ app.post('/api/admin/complete-onboarding', async (req, res) => {
           }),
         }
       )
-      console.log(`[Complete Onboarding] Completed POST status: ${response.status}`)
+      console.log(`[Complete Onboarding] POST Completed entry for "${team}": ${response.status}`)
       if (!response.ok) {
         const errorText = await response.text()
-        console.error(`[Complete Onboarding] Completed POST failed: ${errorText}`)
-        throw new Error(`Failed to POST Completed field: ${response.status} - ${errorText}`)
+        console.error(`[Complete Onboarding] POST Completed failed: ${errorText}`)
+        throw new Error(`Failed to POST Completed entry: ${response.status} - ${errorText}`)
       }
       const responseData = await response.json()
-      console.log(`[Complete Onboarding] Completed POST successful, new value: ${JSON.stringify(responseData.data?.attributes?.value)}`)
+      console.log(`[Complete Onboarding] POST Completed successful, new entry ID: ${responseData.data?.id}`)
+    } else {
+      console.log(`[Complete Onboarding] Team "${team}" already in Completed - skipping POST`)
     }
 
     // Clear Redis cache for this volunteer
