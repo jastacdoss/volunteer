@@ -796,8 +796,8 @@ onUnmounted(() => {
                 </td>
 
                 <!-- Actions -->
-                <td class="px-2 py-4 whitespace-nowrap text-center">
-                  <div class="flex items-center justify-center gap-2">
+                <td class="px-2 py-4 whitespace-nowrap text-right">
+                  <div class="flex items-center justify-end gap-2">
                     <button
                       @click="openCompleteModal(volunteer)"
                       :disabled="volunteer.progress.completed < volunteer.progress.total"
