@@ -92,6 +92,11 @@ const isLoadingReferences = ref(false)
 const showCompleteModal = ref(false)
 const volunteerToComplete = ref<Volunteer | null>(null)
 
+// Remove from onboarding modal state
+const showRemoveModal = ref(false)
+const volunteerToRemove = ref<Volunteer | null>(null)
+const isRemovingFromOnboarding = ref(false)
+
 // Field status helpers
 type FieldStatus = 'empty' | 'pending_user' | 'pending_admin' | 'complete'
 
@@ -487,6 +492,55 @@ async function confirmCompleteOnboarding() {
   }
 }
 
+// Remove from onboarding functions
+function openRemoveModal(volunteer: Volunteer) {
+  volunteerToRemove.value = volunteer
+  showRemoveModal.value = true
+}
+
+function closeRemoveModal() {
+  showRemoveModal.value = false
+  volunteerToRemove.value = null
+}
+
+async function confirmRemoveFromOnboarding() {
+  if (!volunteerToRemove.value) return
+
+  const session = getSession()
+  if (!session || !selectedTab.value) return
+
+  isRemovingFromOnboarding.value = true
+
+  try {
+    // Remove team from "Onboarding In Progress For" (does NOT add to completed)
+    const response = await fetch('/api/admin/remove-from-onboarding', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({
+        personId: volunteerToRemove.value.id,
+        team: selectedTab.value,
+      }),
+    })
+
+    if (response.ok) {
+      const result = await response.json()
+      // Remove volunteer from UI immediately
+      volunteers.value = volunteers.value.filter(v => v.id !== result.personId)
+      closeRemoveModal()
+    } else {
+      alert('Failed to remove from onboarding. Please try again.')
+    }
+  } catch (error) {
+    console.error('Failed to remove from onboarding:', error)
+    alert('Failed to remove from onboarding. Please try again.')
+  } finally {
+    isRemovingFromOnboarding.value = false
+  }
+}
+
 // Polling interval reference
 let pollingInterval: ReturnType<typeof setInterval> | null = null
 
@@ -741,21 +795,32 @@ onUnmounted(() => {
                   </div>
                 </td>
 
-                <!-- Complete -->
+                <!-- Actions -->
                 <td class="px-2 py-4 whitespace-nowrap text-center">
-                  <button
-                    @click="openCompleteModal(volunteer)"
-                    :disabled="volunteer.progress.completed < volunteer.progress.total"
-                    class="inline-flex items-center px-4 py-2 border shadow-sm text-sm font-medium rounded-md transition-colors border-green-600 bg-green-600 text-white"
-                    :class="volunteer.progress.completed >= volunteer.progress.total
-                      ? 'hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500'
-                      : 'opacity-50 cursor-not-allowed'"
-                  >
-                    <svg v-if="volunteer.progress.completed >= volunteer.progress.total" class="w-4 h-4 mr-1.5" fill="currentColor" viewBox="0 0 20 20">
-                      <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                    </svg>
-                    Complete
-                  </button>
+                  <div class="flex items-center justify-center gap-2">
+                    <button
+                      @click="openCompleteModal(volunteer)"
+                      :disabled="volunteer.progress.completed < volunteer.progress.total"
+                      class="inline-flex items-center px-4 py-2 border shadow-sm text-sm font-medium rounded-md transition-colors border-green-600 bg-green-600 text-white"
+                      :class="volunteer.progress.completed >= volunteer.progress.total
+                        ? 'hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500'
+                        : 'opacity-50 cursor-not-allowed'"
+                    >
+                      <svg v-if="volunteer.progress.completed >= volunteer.progress.total" class="w-4 h-4 mr-1.5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                      </svg>
+                      Complete
+                    </button>
+                    <button
+                      @click="openRemoveModal(volunteer)"
+                      class="inline-flex items-center px-3 py-2 border shadow-sm text-sm font-medium rounded-md transition-colors border-red-600 bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                      title="Remove from onboarding"
+                    >
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                      </svg>
+                    </button>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -889,6 +954,58 @@ onUnmounted(() => {
           class="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
         >
           {{ isCompletingOnboarding ? 'Completing...' : 'Confirm' }}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Remove from Onboarding Modal -->
+  <div
+    v-if="showRemoveModal"
+    class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50 flex items-center justify-center"
+    @click.self="closeRemoveModal"
+  >
+    <div class="relative bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+      <!-- Modal Header -->
+      <div class="flex items-center justify-between p-6 border-b">
+        <h3 class="text-xl font-semibold text-gray-900">
+          Remove from Onboarding
+        </h3>
+        <button
+          @click="closeRemoveModal"
+          class="text-gray-400 hover:text-gray-600 transition-colors"
+        >
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Modal Content -->
+      <div class="p-6">
+        <p class="text-gray-700">
+          Are you sure you want to remove <strong>{{ volunteerToRemove?.name }}</strong> from onboarding for <strong>{{ selectedTab ? getTeamDisplayName(selectedTab) : '' }}</strong>?
+        </p>
+        <p class="mt-3 text-sm text-red-600">
+          This will remove them from "Onboarding In Progress For" without marking them as complete. They will no longer appear in this onboarding list.
+        </p>
+      </div>
+
+      <!-- Modal Footer -->
+      <div class="flex items-center justify-end gap-3 p-6 border-t bg-gray-50">
+        <button
+          @click="closeRemoveModal"
+          :disabled="isRemovingFromOnboarding"
+          class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:bg-gray-100 disabled:cursor-not-allowed transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          @click="confirmRemoveFromOnboarding"
+          :disabled="isRemovingFromOnboarding"
+          class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+        >
+          {{ isRemovingFromOnboarding ? 'Removing...' : 'Remove' }}
         </button>
       </div>
     </div>

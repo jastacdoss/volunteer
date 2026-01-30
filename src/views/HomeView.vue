@@ -317,12 +317,6 @@ const steps = computed((): Step[] => {
       backgroundCheckDate: bgDate
     }
 
-    // Only add link if action is not 'pending-only' (i.e., when expired or no check exists but declaration completed)
-    if (action === 'external') {
-      bgStep.link = 'https://ministryopportunities.org/RCCFI'
-      bgStep.linkText = 'Submit Background Check'
-    }
-
     stepsList.push(bgStep)
   }
 

@@ -70,6 +70,9 @@ const selectedVolunteer = ref<Volunteer | null>(null)
 const selectedTeam = ref<string>('')
 const showViewAsModal = ref(false)
 const viewAsVolunteer = ref<Volunteer | null>(null)
+const showRemoveModal = ref(false)
+const volunteerToRemove = ref<Volunteer | null>(null)
+const teamToRemoveFrom = ref<string>('')
 
 // Normalize team name to match storage format (kebab-case)
 function normalizeTeamName(teamName: string): string {
@@ -514,6 +517,48 @@ async function markComplete() {
   } catch (error) {
     console.error('Failed to mark as complete:', error)
     alert('Failed to mark volunteer as complete')
+  }
+}
+
+// Show remove from onboarding confirmation modal
+function showRemove(volunteer: Volunteer, team: string) {
+  volunteerToRemove.value = volunteer
+  teamToRemoveFrom.value = team
+  showRemoveModal.value = true
+}
+
+// Remove volunteer from onboarding for a team (without marking complete)
+async function removeFromOnboarding() {
+  if (!volunteerToRemove.value || !teamToRemoveFrom.value) return
+
+  const session = getSession()
+  if (!session) return
+
+  try {
+    const response = await fetch('/api/admin/remove-from-onboarding', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({
+        personId: volunteerToRemove.value.id,
+        team: teamToRemoveFrom.value,
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error('Failed to remove from onboarding')
+    }
+
+    // Close modal and reload
+    showRemoveModal.value = false
+    volunteerToRemove.value = null
+    teamToRemoveFrom.value = ''
+    await loadVolunteers()
+  } catch (error) {
+    console.error('Failed to remove from onboarding:', error)
+    alert('Failed to remove volunteer from onboarding')
   }
 }
 
@@ -977,17 +1022,28 @@ onUnmounted(() => {
                     </div>
                   </td>
 
-                  <!-- Complete Button -->
+                  <!-- Actions -->
                   <td class="px-2 py-1.5 text-center">
-                    <button
-                      @click="showComplete(volunteer, team)"
-                      class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-green-600 hover:bg-green-700 text-white transition-colors"
-                      title="Mark as Complete"
-                    >
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path>
-                      </svg>
-                    </button>
+                    <div class="flex items-center justify-center gap-1">
+                      <button
+                        @click="showComplete(volunteer, team)"
+                        class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-green-600 hover:bg-green-700 text-white transition-colors"
+                        title="Mark as Complete"
+                      >
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                      </button>
+                      <button
+                        @click="showRemove(volunteer, team)"
+                        class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-red-600 hover:bg-red-700 text-white transition-colors"
+                        title="Remove from Onboarding"
+                      >
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                        </svg>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -1030,6 +1086,38 @@ onUnmounted(() => {
             class="px-4 py-2 text-sm font-medium bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
           >
             Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Remove from Onboarding Modal -->
+    <div
+      v-if="showRemoveModal"
+      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+      @click.self="showRemoveModal = false"
+    >
+      <div class="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+        <h3 class="text-xl font-bold text-gray-900 mb-4">Remove from Onboarding?</h3>
+        <p class="text-gray-700 mb-4">
+          <strong>{{ volunteerToRemove?.name }}</strong> will be removed from onboarding for
+          <strong>{{ getTeamDisplayName(teamToRemoveFrom) }}</strong>.
+        </p>
+        <p class="text-sm text-red-600 mb-6">
+          This will NOT mark them as complete. They will no longer appear in the onboarding list for this team.
+        </p>
+        <div class="flex gap-3 justify-end">
+          <button
+            @click="showRemoveModal = false"
+            class="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            @click="removeFromOnboarding"
+            class="px-4 py-2 text-sm font-medium bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+          >
+            Remove
           </button>
         </div>
       </div>

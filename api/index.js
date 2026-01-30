@@ -2414,6 +2414,107 @@ app.post('/api/admin/complete-onboarding', async (req, res) => {
   }
 })
 
+// Remove volunteer from onboarding for a team (admin or team leader)
+// This removes them from "Onboarding In Progress For" WITHOUT adding to "Onboarding Completed For"
+app.post('/api/admin/remove-from-onboarding', async (req, res) => {
+  const authHeader = req.headers.authorization
+  const accessToken = authHeader?.replace('Bearer ', '')
+  const { personId, team } = req.body
+
+  if (!accessToken) {
+    return res.status(401).json({ error: 'No access token provided' })
+  }
+
+  try {
+    // Verify user is admin or leader for this team
+    const authCheck = await checkAdminOrLeader(accessToken, team)
+
+    if (!authCheck.isAuthorized) {
+      return res.status(403).json({ error: 'Admin or team leader access required' })
+    }
+
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+    // Get field data for this person
+    const fieldDataResponse = await fetch(
+      `https://api.planningcenteronline.com/people/v2/people/${personId}/field_data?per_page=100`,
+      {
+        headers: {
+          Authorization: `Basic ${credentials}`,
+        },
+      }
+    )
+
+    if (!fieldDataResponse.ok) {
+      return res.status(500).json({ error: 'Failed to fetch field data' })
+    }
+
+    const fieldDataResult = await fieldDataResponse.json()
+
+    // PCO multi-select fields store MULTIPLE FieldDatum records (one per selected option)
+    const inProgressEntries = fieldDataResult.data?.filter(
+      item => item.relationships?.field_definition?.data?.id === FIELD_IDS.onboardingInProgressFor
+    ) || []
+
+    // Extract current values from entries
+    const inProgressTeams = inProgressEntries.map(e => e.attributes?.value).filter(Boolean)
+
+    console.log(`[Remove from Onboarding] Person: ${personId}, Team: ${team}`)
+    console.log(`[Remove from Onboarding] In Progress entries:`, inProgressEntries.map(e => ({ id: e.id, value: e.attributes?.value })))
+
+    // REMOVE from "In Progress" - DELETE the specific FieldDatum entry for this team
+    const entryToRemove = inProgressEntries.find(e => e.attributes?.value === team)
+    if (entryToRemove) {
+      const response = await fetch(
+        `https://api.planningcenteronline.com/people/v2/field_data/${entryToRemove.id}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Basic ${credentials}`,
+          },
+        }
+      )
+      console.log(`[Remove from Onboarding] DELETE In Progress entry ${entryToRemove.id} (${team}): ${response.status}`)
+      if (!response.ok) {
+        const errorText = await response.text()
+        console.error(`[Remove from Onboarding] DELETE In Progress failed: ${errorText}`)
+        throw new Error(`Failed to DELETE In Progress entry: ${response.status} - ${errorText}`)
+      }
+    } else {
+      console.log(`[Remove from Onboarding] No In Progress entry found for team "${team}" - nothing to remove`)
+    }
+
+    // Check if volunteer still has other teams in progress
+    const remainingInProgressTeams = inProgressTeams.filter(t => t !== team)
+    console.log(`[Remove from Onboarding] Remaining In Progress teams after removing "${team}":`, remainingInProgressTeams)
+
+    if (remainingInProgressTeams.length > 0) {
+      // Volunteer still has other teams to complete - re-sync to update their data
+      console.log(`[Remove from Onboarding] Re-syncing volunteer ${personId} (still has ${remainingInProgressTeams.length} teams in progress)`)
+      await syncSingleVolunteer(personId)
+      console.log(`[Remove from Onboarding] Re-sync complete for ${personId}`)
+    } else {
+      // No more teams in progress - remove from Redis cache entirely
+      console.log(`[Remove from Onboarding] Attempting to delete volunteer:${personId} from Redis (no teams remaining)`)
+      const deleteResult = await deleteVolunteer(personId)
+      console.log(`[Remove from Onboarding] Redis deletion result: ${deleteResult} (1=success, 0=key didn't exist)`)
+
+      // Verify deletion
+      const verification = await getVolunteer(personId)
+      if (verification) {
+        console.error(`[Remove from Onboarding] WARNING: volunteer:${personId} still exists in Redis after deletion!`)
+      } else {
+        console.log(`[Remove from Onboarding] Verified: volunteer:${personId} successfully removed from Redis`)
+      }
+    }
+
+    res.json({ success: true, personId, remainingTeams: remainingInProgressTeams })
+  } catch (error) {
+    console.error('Remove from onboarding error:', error)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // Fetch references for a volunteer
 app.get('/api/references/:personId', async (req, res) => {
   try {
