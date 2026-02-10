@@ -1,0 +1,7 @@
+{
+  "pin": "1234",
+  "tripId": "603095",
+  "freeAnswerThreshold": 250,
+  "maxFreeAnswersPerTable": 3,
+  "refreshInterval": 10000
+}

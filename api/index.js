@@ -8,6 +8,16 @@ import { setVolunteer, getVolunteer, getAllVolunteers, clearAllVolunteers, delet
 import { uploadFile, deleteFileFromR2, getDownloadUrl, getUploadUrl } from './lib/r2.js'
 import { makeRequest, getRateLimiterStats, resetRateLimiterStats } from './lib/rate-limiter.js'
 import { FIELD_IDS, FIELD_NAMES } from './config/field-ids.js'
+import {
+  getDonations,
+  getDonationByMmId,
+  createDonation,
+  updateDonation,
+  upsertDonationByMmId,
+  getFreeAnswers,
+  incrementFreeAnswer,
+  decrementFreeAnswer
+} from './lib/supabase.js'
 import { REFERENCES_FORM_FIELDS } from './config/form-field-ids.js'
 
 // Get __dirname equivalent for ES modules
@@ -3786,6 +3796,402 @@ app.get('/api/resources/test-r2', async (req, res) => {
       error: 'R2 configuration test failed',
       details: err.message
     })
+  }
+})
+
+// ================================================================================
+// FUNDRAISER ENDPOINTS
+// ================================================================================
+
+// Load fundraiser config
+function getFundraiserConfig() {
+  try {
+    const configPath = join(__dirname, '../data/fundraiserConfig.json')
+    return JSON.parse(readFileSync(configPath, 'utf-8'))
+  } catch (err) {
+    console.error('[Fundraiser] Error loading config:', err)
+    return {
+      pin: '1234',
+      tripId: '603095',
+      freeAnswerThreshold: 250,
+      maxFreeAnswersPerTable: 3,
+      refreshInterval: 10000
+    }
+  }
+}
+
+// Parse table number from MM Notes field
+function parseTableNumber(notes) {
+  if (!notes) return null
+  const match = notes.match(/(?:table\s*:?\s*|#)?(\d+)/i)
+  return match ? parseInt(match[1], 10) : null
+}
+
+// Verify PIN
+app.post('/api/fundraiser/verify-pin', (req, res) => {
+  try {
+    const { pin } = req.body
+    const config = getFundraiserConfig()
+
+    if (pin === config.pin) {
+      res.json({ valid: true })
+    } else {
+      res.status(401).json({ valid: false, error: 'Invalid PIN' })
+    }
+  } catch (err) {
+    console.error('[Fundraiser] PIN verification error:', err)
+    res.status(500).json({ error: 'Failed to verify PIN' })
+  }
+})
+
+// Get all donations (syncs from MM first)
+app.get('/api/fundraiser/donations', async (req, res) => {
+  try {
+    const config = getFundraiserConfig()
+    const mmApiKey = process.env.MM_API_KEY
+
+    // Fetch donations from Managed Missions
+    if (mmApiKey) {
+      try {
+        const mmResponse = await fetch(
+          `https://app.managedmissions.com/API/ContributionAPI/List?MissionTripId=${config.tripId}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${mmApiKey}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        )
+
+        if (mmResponse.ok) {
+          const mmData = await mmResponse.json()
+          const contributions = mmData.Contributions || []
+
+          // Sync new MM donations to Supabase
+          for (const contrib of contributions) {
+            const mmId = String(contrib.ContributionID)
+            const existing = await getDonationByMmId(mmId)
+
+            if (!existing) {
+              // Parse table number from Notes
+              const tableNumber = parseTableNumber(contrib.Notes)
+
+              await upsertDonationByMmId({
+                source: 'mm',
+                mm_id: mmId,
+                first_name: contrib.FirstName || '',
+                last_name: contrib.LastName || '',
+                phone: contrib.PhoneNumber || null,
+                email: contrib.Email || null,
+                address: contrib.Address || null,
+                table_number: tableNumber,
+                amount: parseFloat(contrib.Amount) || 0,
+                notes: contrib.Notes || null
+              })
+            }
+          }
+        } else {
+          console.error('[Fundraiser] MM API error:', mmResponse.status, await mmResponse.text())
+        }
+      } catch (mmErr) {
+        console.error('[Fundraiser] MM sync error:', mmErr)
+      }
+    }
+
+    // Get all donations from Supabase
+    const donations = await getDonations()
+    const freeAnswers = await getFreeAnswers()
+
+    // Group donations by table
+    const tables = {}
+    const unmatched = []
+
+    for (const donation of donations) {
+      if (donation.table_number === null) {
+        unmatched.push(donation)
+      } else {
+        const tableNum = donation.table_number
+        if (!tables[tableNum]) {
+          tables[tableNum] = {
+            tableNumber: tableNum,
+            donations: [],
+            total: 0
+          }
+        }
+        tables[tableNum].donations.push(donation)
+        tables[tableNum].total += parseFloat(donation.amount) || 0
+      }
+    }
+
+    // Add free answers data to tables
+    const freeAnswersMap = {}
+    for (const fa of freeAnswers) {
+      freeAnswersMap[fa.table_number] = fa.given_count
+    }
+
+    for (const tableNum of Object.keys(tables)) {
+      const table = tables[tableNum]
+      const earned = Math.min(Math.floor(table.total / config.freeAnswerThreshold), config.maxFreeAnswersPerTable)
+      table.freeAnswersEarned = earned
+      table.freeAnswersGiven = freeAnswersMap[tableNum] || 0
+    }
+
+    res.json({
+      donations,
+      tables: Object.values(tables).sort((a, b) => a.tableNumber - b.tableNumber),
+      unmatched,
+      config: {
+        freeAnswerThreshold: config.freeAnswerThreshold,
+        maxFreeAnswersPerTable: config.maxFreeAnswersPerTable,
+        refreshInterval: config.refreshInterval
+      }
+    })
+  } catch (err) {
+    console.error('[Fundraiser] Get donations error:', err)
+    res.status(500).json({ error: 'Failed to get donations' })
+  }
+})
+
+// Create new donation
+app.post('/api/fundraiser/donations', async (req, res) => {
+  try {
+    const { firstName, lastName, phone, email, address, tableNumber, amount, notes } = req.body
+
+    if (!firstName || !lastName || amount === undefined) {
+      return res.status(400).json({ error: 'First name, last name, and amount are required' })
+    }
+
+    // Create in Supabase first
+    const donation = await createDonation({
+      source: 'local',
+      first_name: firstName,
+      last_name: lastName,
+      phone: phone || null,
+      email: email || null,
+      address: address || null,
+      table_number: tableNumber ? parseInt(tableNumber, 10) : null,
+      amount: parseFloat(amount),
+      notes: notes || null
+    })
+
+    // Also create in Managed Missions
+    const mmApiKey = process.env.MM_API_KEY
+    const config = getFundraiserConfig()
+
+    if (mmApiKey) {
+      try {
+        // Build notes with table number
+        let mmNotes = tableNumber ? `Table ${tableNumber}` : ''
+        if (notes) {
+          mmNotes = mmNotes ? `${mmNotes} - ${notes}` : notes
+        }
+
+        const mmResponse = await fetch(
+          'https://app.managedmissions.com/API/ContributionAPI/Create',
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${mmApiKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              MissionTripID: parseInt(config.tripId, 10),
+              FirstName: firstName,
+              LastName: lastName,
+              PhoneNumber: phone || '',
+              Email: email || '',
+              Address: address || '',
+              Amount: parseFloat(amount),
+              Notes: mmNotes
+            })
+          }
+        )
+
+        if (mmResponse.ok) {
+          const mmData = await mmResponse.json()
+          // Update Supabase record with MM ID
+          if (mmData.ContributionID) {
+            await updateDonation(donation.id, { mm_id: String(mmData.ContributionID) })
+          }
+        } else {
+          console.error('[Fundraiser] MM create error:', mmResponse.status, await mmResponse.text())
+        }
+      } catch (mmErr) {
+        console.error('[Fundraiser] MM create error:', mmErr)
+      }
+    }
+
+    res.json(donation)
+  } catch (err) {
+    console.error('[Fundraiser] Create donation error:', err)
+    res.status(500).json({ error: 'Failed to create donation' })
+  }
+})
+
+// Update donation
+app.patch('/api/fundraiser/donations/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const { firstName, lastName, phone, email, address, tableNumber, amount, notes } = req.body
+
+    const updates = {}
+    if (firstName !== undefined) updates.first_name = firstName
+    if (lastName !== undefined) updates.last_name = lastName
+    if (phone !== undefined) updates.phone = phone || null
+    if (email !== undefined) updates.email = email || null
+    if (address !== undefined) updates.address = address || null
+    if (tableNumber !== undefined) updates.table_number = tableNumber ? parseInt(tableNumber, 10) : null
+    if (amount !== undefined) updates.amount = parseFloat(amount)
+    if (notes !== undefined) updates.notes = notes || null
+
+    const donation = await updateDonation(id, updates)
+
+    // Also update in MM if we have mm_id
+    const mmApiKey = process.env.MM_API_KEY
+    if (mmApiKey && donation.mm_id) {
+      try {
+        // Build notes with table number
+        let mmNotes = donation.table_number ? `Table ${donation.table_number}` : ''
+        if (donation.notes) {
+          mmNotes = mmNotes ? `${mmNotes} - ${donation.notes}` : donation.notes
+        }
+
+        const mmResponse = await fetch(
+          'https://app.managedmissions.com/API/ContributionAPI/Update',
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${mmApiKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              ContributionID: parseInt(donation.mm_id, 10),
+              FirstName: donation.first_name,
+              LastName: donation.last_name,
+              PhoneNumber: donation.phone || '',
+              Email: donation.email || '',
+              Address: donation.address || '',
+              Amount: parseFloat(donation.amount),
+              Notes: mmNotes
+            })
+          }
+        )
+
+        if (!mmResponse.ok) {
+          console.error('[Fundraiser] MM update error:', mmResponse.status, await mmResponse.text())
+        }
+      } catch (mmErr) {
+        console.error('[Fundraiser] MM update error:', mmErr)
+      }
+    }
+
+    res.json(donation)
+  } catch (err) {
+    console.error('[Fundraiser] Update donation error:', err)
+    res.status(500).json({ error: 'Failed to update donation' })
+  }
+})
+
+// PCO phone lookup
+app.get('/api/fundraiser/lookup-phone/:phone', async (req, res) => {
+  try {
+    const { phone } = req.params
+    const cleanPhone = phone.replace(/\D/g, '')
+
+    if (cleanPhone.length < 7) {
+      return res.json({ matches: [] })
+    }
+
+    const pcoSecret = process.env.PCO_SECRET
+    if (!pcoSecret) {
+      return res.status(500).json({ error: 'PCO not configured' })
+    }
+
+    // Search PCO for matching phone numbers
+    const pcoResponse = await fetch(
+      `https://api.planningcenteronline.com/people/v2/people?where[search_phone_number]=${cleanPhone}&include=emails,addresses`,
+      {
+        headers: {
+          'Authorization': `Basic ${Buffer.from(pcoSecret).toString('base64')}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    )
+
+    if (!pcoResponse.ok) {
+      console.error('[Fundraiser] PCO lookup error:', pcoResponse.status)
+      return res.json({ matches: [] })
+    }
+
+    const pcoData = await pcoResponse.json()
+    const people = pcoData.data || []
+    const included = pcoData.included || []
+
+    // Build lookup maps for included resources
+    const emailsMap = {}
+    const addressesMap = {}
+
+    for (const item of included) {
+      if (item.type === 'Email') {
+        const personId = item.relationships?.person?.data?.id
+        if (personId) {
+          if (!emailsMap[personId]) emailsMap[personId] = []
+          emailsMap[personId].push(item.attributes.address)
+        }
+      } else if (item.type === 'Address') {
+        const personId = item.relationships?.person?.data?.id
+        if (personId) {
+          if (!addressesMap[personId]) addressesMap[personId] = []
+          const addr = item.attributes
+          addressesMap[personId].push({
+            street: addr.street,
+            city: addr.city,
+            state: addr.state,
+            zip: addr.zip,
+            full: [addr.street, addr.city, addr.state, addr.zip].filter(Boolean).join(', ')
+          })
+        }
+      }
+    }
+
+    // Format matches
+    const matches = people.map(person => ({
+      id: person.id,
+      firstName: person.attributes.first_name,
+      lastName: person.attributes.last_name,
+      email: (emailsMap[person.id] || [])[0] || null,
+      address: (addressesMap[person.id] || [])[0]?.full || null
+    }))
+
+    res.json({ matches })
+  } catch (err) {
+    console.error('[Fundraiser] Phone lookup error:', err)
+    res.status(500).json({ error: 'Failed to lookup phone' })
+  }
+})
+
+// Give/undo free answer
+app.post('/api/fundraiser/free-answer', async (req, res) => {
+  try {
+    const { tableNumber, action } = req.body
+
+    if (!tableNumber || !action) {
+      return res.status(400).json({ error: 'Table number and action are required' })
+    }
+
+    let result
+    if (action === 'give') {
+      result = await incrementFreeAnswer(tableNumber)
+    } else if (action === 'undo') {
+      result = await decrementFreeAnswer(tableNumber)
+    } else {
+      return res.status(400).json({ error: 'Action must be "give" or "undo"' })
+    }
+
+    res.json(result)
+  } catch (err) {
+    console.error('[Fundraiser] Free answer error:', err)
+    res.status(500).json({ error: 'Failed to update free answer' })
   }
 })
 

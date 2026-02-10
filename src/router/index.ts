@@ -10,6 +10,7 @@ import LifeGroupsMapView from '../views/LifeGroupsMapView.vue'
 import FindYourFitView from '../views/FindYourFitView.vue'
 import ResourcesView from '../views/ResourcesView.vue'
 import EventCheckinsView from '../views/EventCheckinsView.vue'
+import FundraiserView from '../views/FundraiserView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -71,6 +72,12 @@ const router = createRouter({
       path: '/event/checkins/:eventId/:eventPeriodId',
       name: 'event-checkins',
       component: EventCheckinsView,
+      meta: { public: true },
+    },
+    {
+      path: '/fundraiser',
+      name: 'fundraiser',
+      component: FundraiserView,
       meta: { public: true },
     },
   ],
