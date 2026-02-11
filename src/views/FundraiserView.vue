@@ -13,11 +13,16 @@ interface Donation {
   last_name: string
   phone?: string
   email?: string
-  address?: string
+  street?: string
+  city?: string
+  state?: string
+  zip?: string
   table_number: number | null
   amount: number
   notes?: string
+  reference_number?: string
   created_at: string
+  deleted_at?: string
 }
 
 interface TableSummary {
@@ -31,12 +36,15 @@ interface TableSummary {
 
 interface PcoMatch {
   id: string
-  name: string
   firstName: string
   lastName: string
   email?: string
   phone?: string
-  address?: string
+  street?: string
+  city?: string
+  state?: string
+  zip?: string
+  tableNumber?: number
 }
 
 // ========================================
@@ -56,6 +64,7 @@ const activeTab = ref<'tables' | 'all'>('tables')
 const donations = ref<Donation[]>([])
 const tables = ref<TableSummary[]>([])
 const unmatchedDonations = ref<Donation[]>([])
+const deletedDonations = ref<Donation[]>([])
 const freeAnswersGiven = ref<Record<number, number>>({})
 const isLoading = ref(false)
 const lastUpdated = ref<Date | null>(null)
@@ -66,7 +75,10 @@ const formData = ref({
   firstName: '',
   lastName: '',
   email: '',
-  address: '',
+  street: '',
+  city: '',
+  state: '',
+  zip: '',
   tableNumber: '',
   amount: ''
 })
@@ -87,11 +99,19 @@ const editForm = ref({
   lastName: '',
   phone: '',
   email: '',
-  address: '',
+  street: '',
+  city: '',
+  state: '',
+  zip: '',
   tableNumber: '',
   amount: ''
 })
 const isEditing = ref(false)
+
+// Payment state
+const paymentMode = ref<'idle' | 'processing' | 'waiting' | 'success' | 'error'>('idle')
+const currentCheckoutId = ref<string | null>(null)
+const paymentError = ref('')
 
 // Config
 const config = ref({
@@ -108,10 +128,12 @@ let refreshInterval: ReturnType<typeof setInterval> | null = null
 // ========================================
 
 const totalRaised = computed(() => {
-  return donations.value.reduce((sum, d) => sum + d.amount, 0)
+  // Only count non-deleted donations
+  return donations.value.filter(d => !d.deleted_at).reduce((sum, d) => sum + d.amount, 0)
 })
 
-const totalDonations = computed(() => donations.value.length)
+const totalDonations = computed(() => donations.value.filter(d => !d.deleted_at).length)
+const activeDonations = computed(() => donations.value.filter(d => !d.deleted_at))
 
 const sortedTables = computed(() => {
   return [...tables.value].sort((a, b) => a.number - b.number)
@@ -177,8 +199,15 @@ async function fetchDonations() {
 function groupDonationsByTable() {
   const tableMap = new Map<number, Donation[]>()
   const unmatched: Donation[] = []
+  const deleted: Donation[] = []
 
   for (const donation of donations.value) {
+    // Skip deleted donations from table calculations
+    if (donation.deleted_at) {
+      deleted.push(donation)
+      continue
+    }
+
     if (donation.table_number !== null) {
       const existing = tableMap.get(donation.table_number) || []
       existing.push(donation)
@@ -189,6 +218,7 @@ function groupDonationsByTable() {
   }
 
   unmatchedDonations.value = unmatched
+  deletedDonations.value = deleted
 
   // Build table summaries
   const tableSummaries: TableSummary[] = []
@@ -257,10 +287,18 @@ async function lookupPhone(phone: string) {
 
 function selectPcoMatch(match: PcoMatch) {
   selectedPcoMatch.value = match
-  formData.value.firstName = match.firstName
-  formData.value.lastName = match.lastName
+  formData.value.firstName = match.firstName || ''
+  formData.value.lastName = match.lastName || ''
   formData.value.email = match.email || ''
-  formData.value.address = match.address || ''
+  formData.value.street = match.street || ''
+  formData.value.city = match.city || ''
+  formData.value.state = match.state || ''
+  formData.value.zip = match.zip || ''
+  // Auto-populate table number if this donor has donated before
+  if (match.tableNumber) {
+    formData.value.tableNumber = String(match.tableNumber)
+  }
+  // Keep the phone that was searched with
   showPcoDropdown.value = false
 }
 
@@ -268,26 +306,48 @@ function selectPcoMatch(match: PcoMatch) {
 // Form Submission
 // ========================================
 
-async function submitDonation() {
+function validateForm(): boolean {
   submitError.value = ''
-  submitSuccess.value = false
+  paymentError.value = ''
 
-  // Validate
+  if (!formData.value.phone || formData.value.phone.replace(/\D/g, '').length < 10) {
+    submitError.value = 'Valid phone number is required'
+    return false
+  }
   if (!formData.value.firstName || !formData.value.lastName) {
     submitError.value = 'First and last name are required'
-    return
+    return false
   }
   if (!formData.value.tableNumber) {
     submitError.value = 'Table number is required'
-    return
+    return false
   }
   if (!formData.value.amount || parseFloat(formData.value.amount) <= 0) {
     submitError.value = 'Valid amount is required'
-    return
+    return false
   }
+  return true
+}
 
-  isSubmitting.value = true
+function clearFormAndRefresh() {
+  formData.value = {
+    phone: '',
+    firstName: '',
+    lastName: '',
+    email: '',
+    street: '',
+    city: '',
+    state: '',
+    zip: '',
+    tableNumber: '',
+    amount: ''
+  }
+  selectedPcoMatch.value = null
+  pcoMatches.value = []
+  fetchDonations()
+}
 
+async function createDonation(): Promise<boolean> {
   try {
     const response = await fetch('/api/fundraiser/donations', {
       method: 'POST',
@@ -297,7 +357,10 @@ async function submitDonation() {
         last_name: formData.value.lastName,
         phone: formData.value.phone || null,
         email: formData.value.email || null,
-        address: formData.value.address || null,
+        street: formData.value.street || null,
+        city: formData.value.city || null,
+        state: formData.value.state || null,
+        zip: formData.value.zip || null,
         table_number: parseInt(formData.value.tableNumber),
         amount: parseFloat(formData.value.amount)
       })
@@ -307,32 +370,147 @@ async function submitDonation() {
       const data = await response.json()
       throw new Error(data.error || 'Failed to submit donation')
     }
-
-    // Success - clear form and refresh
-    submitSuccess.value = true
-    formData.value = {
-      phone: '',
-      firstName: '',
-      lastName: '',
-      email: '',
-      address: '',
-      tableNumber: '',
-      amount: ''
-    }
-    selectedPcoMatch.value = null
-    pcoMatches.value = []
-
-    await fetchDonations()
-
-    // Clear success message after 3 seconds
-    setTimeout(() => {
-      submitSuccess.value = false
-    }, 3000)
+    return true
   } catch (error: any) {
     submitError.value = error.message || 'Failed to submit donation'
+    return false
+  }
+}
+
+// Cash payment - just create the donation
+async function submitCashPayment() {
+  if (!validateForm()) return
+
+  submitSuccess.value = false
+  isSubmitting.value = true
+
+  try {
+    const success = await createDonation()
+    if (success) {
+      submitSuccess.value = true
+      clearFormAndRefresh()
+      setTimeout(() => { submitSuccess.value = false }, 3000)
+    }
   } finally {
     isSubmitting.value = false
   }
+}
+
+// Card payment - create Square checkout, wait for completion, then create donation
+async function startCardPayment() {
+  if (!validateForm()) return
+
+  paymentMode.value = 'processing'
+  paymentError.value = ''
+
+  try {
+    // Create Square Terminal checkout
+    const response = await fetch('/api/fundraiser/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        amount: parseFloat(formData.value.amount),
+        donorInfo: {
+          firstName: formData.value.firstName,
+          lastName: formData.value.lastName,
+          tableNumber: formData.value.tableNumber
+        }
+      })
+    })
+
+    if (!response.ok) {
+      const data = await response.json()
+      throw new Error(data.error || 'Failed to create checkout')
+    }
+
+    const data = await response.json()
+    currentCheckoutId.value = data.checkoutId
+    paymentMode.value = 'waiting'
+
+    // Start polling for payment completion
+    pollPaymentStatus()
+  } catch (error: any) {
+    paymentError.value = error.message || 'Failed to start payment'
+    paymentMode.value = 'error'
+  }
+}
+
+let pollInterval: ReturnType<typeof setInterval> | null = null
+
+let pollStartTime: number | null = null
+const POLL_TIMEOUT = 5 * 60 * 1000 // 5 minutes max
+
+async function pollPaymentStatus() {
+  if (!currentCheckoutId.value) return
+
+  pollStartTime = Date.now()
+
+  // Poll every 3 seconds
+  pollInterval = setInterval(async () => {
+    // Stop polling after 5 minutes
+    if (pollStartTime && Date.now() - pollStartTime > POLL_TIMEOUT) {
+      clearInterval(pollInterval!)
+      pollInterval = null
+      paymentMode.value = 'error'
+      paymentError.value = 'Payment timed out'
+      currentCheckoutId.value = null
+      return
+    }
+
+    try {
+      const response = await fetch(`/api/fundraiser/checkout/${currentCheckoutId.value}`)
+      const data = await response.json()
+
+      if (data.status === 'COMPLETED') {
+        // Payment successful - create the donation
+        clearInterval(pollInterval!)
+        pollInterval = null
+
+        paymentMode.value = 'processing'
+        const success = await createDonation()
+
+        if (success) {
+          paymentMode.value = 'success'
+          setTimeout(() => {
+            paymentMode.value = 'idle'
+            clearFormAndRefresh()
+          }, 2000)
+        } else {
+          paymentMode.value = 'error'
+          paymentError.value = 'Payment collected but failed to record donation'
+        }
+        currentCheckoutId.value = null
+      } else if (data.status === 'CANCELED' || data.status === 'CANCEL_REQUESTED') {
+        clearInterval(pollInterval!)
+        pollInterval = null
+        paymentMode.value = 'idle'
+        currentCheckoutId.value = null
+      }
+    } catch (error) {
+      console.error('Error polling payment status:', error)
+    }
+  }, 3000)
+}
+
+async function cancelPayment() {
+  if (pollInterval) {
+    clearInterval(pollInterval)
+    pollInterval = null
+  }
+
+  if (currentCheckoutId.value) {
+    try {
+      await fetch(`/api/fundraiser/checkout/${currentCheckoutId.value}/cancel`, {
+        method: 'POST'
+      })
+    } catch (error) {
+      console.error('Error canceling payment:', error)
+    }
+  }
+
+  currentCheckoutId.value = null
+  paymentMode.value = 'idle'
+  paymentError.value = ''
 }
 
 // ========================================
@@ -409,7 +587,10 @@ function openEditModal(donation: Donation) {
     lastName: donation.last_name,
     phone: donation.phone || '',
     email: donation.email || '',
-    address: donation.address || '',
+    street: donation.street || '',
+    city: donation.city || '',
+    state: donation.state || '',
+    zip: donation.zip || '',
     tableNumber: donation.table_number?.toString() || '',
     amount: donation.amount.toString()
   }
@@ -425,18 +606,26 @@ async function saveEdit() {
   isEditing.value = true
 
   try {
+    // MM donations: only table number can be edited
+    const payload = editingDonation.value.source === 'mm'
+      ? { tableNumber: editForm.value.tableNumber ? parseInt(editForm.value.tableNumber) : null }
+      : {
+          firstName: editForm.value.firstName,
+          lastName: editForm.value.lastName,
+          phone: editForm.value.phone || null,
+          email: editForm.value.email || null,
+          street: editForm.value.street || null,
+          city: editForm.value.city || null,
+          state: editForm.value.state || null,
+          zip: editForm.value.zip || null,
+          tableNumber: editForm.value.tableNumber ? parseInt(editForm.value.tableNumber) : null,
+          amount: parseFloat(editForm.value.amount)
+        }
+
     const response = await fetch(`/api/fundraiser/donations/${editingDonation.value.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        first_name: editForm.value.firstName,
-        last_name: editForm.value.lastName,
-        phone: editForm.value.phone || null,
-        email: editForm.value.email || null,
-        address: editForm.value.address || null,
-        table_number: editForm.value.tableNumber ? parseInt(editForm.value.tableNumber) : null,
-        amount: parseFloat(editForm.value.amount)
-      })
+      body: JSON.stringify(payload)
     })
 
     if (response.ok) {
@@ -447,6 +636,34 @@ async function saveEdit() {
     console.error('Error saving edit:', error)
   } finally {
     isEditing.value = false
+  }
+}
+
+// ========================================
+// Delete Donation
+// ========================================
+
+async function confirmDeleteDonation(donation: Donation) {
+  const name = `${donation.first_name} ${donation.last_name}`.trim() || 'Anonymous'
+  const amount = formatCurrency(donation.amount)
+
+  if (!confirm(`Delete donation from ${name} for ${amount}?\n\nThis will remove it from our system${donation.mm_id ? ' and Managed Missions' : ''}.`)) {
+    return
+  }
+
+  try {
+    const response = await fetch(`/api/fundraiser/donations/${donation.id}`, {
+      method: 'DELETE'
+    })
+
+    if (response.ok) {
+      await fetchDonations()
+    } else {
+      alert('Failed to delete donation')
+    }
+  } catch (error) {
+    console.error('Error deleting donation:', error)
+    alert('Failed to delete donation')
   }
 }
 
@@ -502,6 +719,9 @@ onUnmounted(() => {
   }
   if (lookupTimeout) {
     clearTimeout(lookupTimeout)
+  }
+  if (pollInterval) {
+    clearInterval(pollInterval)
   }
 })
 </script>
@@ -600,8 +820,9 @@ onUnmounted(() => {
         <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <h2 class="text-lg font-semibold text-gray-900 mb-4">Add Donation</h2>
 
-          <form @submit.prevent="submitDonation" class="space-y-4">
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <form @submit.prevent class="space-y-4">
+            <!-- Row 1: Phone and Email -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <!-- Phone with PCO Lookup -->
               <div class="relative">
                 <label class="block text-sm font-medium text-gray-700 mb-1">Phone</label>
@@ -632,32 +853,10 @@ onUnmounted(() => {
                     type="button"
                     class="w-full px-4 py-2 text-left hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
                   >
-                    <p class="font-medium text-gray-900">{{ match.name }}</p>
-                    <p class="text-sm text-gray-500">{{ match.email || match.phone || 'No contact info' }}</p>
+                    <span class="font-medium text-gray-900">{{ match.firstName }} {{ match.lastName }}</span>
+                    <span v-if="match.email" class="text-gray-500"> ({{ match.email }})</span>
                   </button>
                 </div>
-              </div>
-
-              <!-- First Name -->
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">First Name *</label>
-                <input
-                  v-model="formData.firstName"
-                  type="text"
-                  required
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-
-              <!-- Last Name -->
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Last Name *</label>
-                <input
-                  v-model="formData.lastName"
-                  type="text"
-                  required
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
               </div>
 
               <!-- Email -->
@@ -671,17 +870,75 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <!-- Address -->
+            <!-- Row 2: First Name and Last Name -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <!-- First Name -->
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Address</label>
+                <label class="block text-sm font-medium text-gray-700 mb-1">First Name *</label>
                 <input
-                  v-model="formData.address"
+                  v-model="formData.firstName"
                   type="text"
                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
 
+              <!-- Last Name -->
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Last Name *</label>
+                <input
+                  v-model="formData.lastName"
+                  type="text"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+            </div>
+
+            <!-- Row 3: Address fields -->
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <!-- Street -->
+              <div class="md:col-span-2">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Street</label>
+                <input
+                  v-model="formData.street"
+                  type="text"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+
+              <!-- City -->
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">City</label>
+                <input
+                  v-model="formData.city"
+                  type="text"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+
+              <!-- State/Zip -->
+              <div class="grid grid-cols-2 gap-2">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">State</label>
+                  <input
+                    v-model="formData.state"
+                    type="text"
+                    maxlength="2"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">Zip</label>
+                  <input
+                    v-model="formData.zip"
+                    type="text"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- Row 4: Table # and Amount -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <!-- Table Number -->
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Table # *</label>
@@ -689,7 +946,6 @@ onUnmounted(() => {
                   v-model="formData.tableNumber"
                   type="number"
                   min="1"
-                  required
                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
               </div>
@@ -704,27 +960,42 @@ onUnmounted(() => {
                     type="number"
                     min="0.01"
                     step="0.01"
-                    required
                     class="w-full pl-7 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
                 </div>
               </div>
             </div>
 
-            <!-- Submit Button -->
-            <div class="flex items-center justify-between">
-              <div>
-                <p v-if="submitError" class="text-red-600 text-sm">{{ submitError }}</p>
-                <p v-if="submitSuccess" class="text-green-600 text-sm">Donation added successfully!</p>
+            <!-- Payment Buttons -->
+            <div class="space-y-3">
+              <div v-if="submitError" class="text-red-600 text-sm">{{ submitError }}</div>
+              <div v-if="submitSuccess" class="text-green-600 text-sm">Donation added successfully!</div>
+
+              <div class="flex gap-3">
+                <button
+                  type="button"
+                  @click="startCardPayment"
+                  class="flex-1 py-3 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  :disabled="isSubmitting || paymentMode !== 'idle'"
+                >
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
+                  </svg>
+                  Card Payment
+                </button>
+                <button
+                  type="button"
+                  @click="submitCashPayment"
+                  class="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  :disabled="isSubmitting || paymentMode !== 'idle'"
+                >
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path>
+                  </svg>
+                  <span v-if="isSubmitting">Processing...</span>
+                  <span v-else>Cash Payment</span>
+                </button>
               </div>
-              <button
-                type="submit"
-                class="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                :disabled="isSubmitting"
-              >
-                <span v-if="isSubmitting">Adding...</span>
-                <span v-else>Add Donation</span>
-              </button>
             </div>
           </form>
         </div>
@@ -756,7 +1027,7 @@ onUnmounted(() => {
                   class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">Select...</option>
-                  <option v-for="n in 50" :key="n" :value="n">{{ n }}</option>
+                  <option v-for="n in 100" :key="n" :value="n">{{ n }}</option>
                 </select>
               </div>
             </div>
@@ -764,14 +1035,15 @@ onUnmounted(() => {
         </div>
 
         <!-- Table Cards -->
-        <div class="space-y-4">
-          <h2 class="text-lg font-semibold text-gray-900">Tables ({{ sortedTables.length }})</h2>
+        <div>
+          <h2 class="text-lg font-semibold text-gray-900 mb-4">Tables ({{ sortedTables.length }})</h2>
 
           <div v-if="sortedTables.length === 0" class="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
             <p class="text-gray-500">No donations yet. Add a donation above to get started.</p>
           </div>
 
-          <div v-for="table in sortedTables" :key="table.number" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            <div v-for="table in sortedTables" :key="table.number" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <!-- Table Header -->
             <button
               @click="toggleTable(table.number)"
@@ -784,21 +1056,17 @@ onUnmounted(() => {
               </div>
 
               <div class="flex items-center gap-4">
-                <!-- Free Answers Badges -->
-                <div v-if="table.freeAnswersEarned > 0" class="flex items-center gap-2">
-                  <span
-                    v-for="i in table.freeAnswersEarned"
-                    :key="i"
-                    :class="[
-                      'px-2 py-1 rounded-full text-xs font-medium',
-                      i <= table.freeAnswersGiven
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-blue-100 text-blue-800'
-                    ]"
-                  >
-                    {{ i <= table.freeAnswersGiven ? 'Given' : 'Free Answer' }}
-                  </span>
-                </div>
+                <!-- Free Answers Summary -->
+                <span
+                  :class="[
+                    'px-3 py-1 rounded-full text-xs font-medium',
+                    table.freeAnswersEarned > 0
+                      ? (table.freeAnswersGiven >= table.freeAnswersEarned ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800')
+                      : 'bg-gray-100 text-gray-600'
+                  ]"
+                >
+                  Free Answers: {{ table.freeAnswersGiven }}/{{ table.freeAnswersEarned }}
+                </span>
 
                 <!-- Expand/Collapse Icon -->
                 <svg
@@ -814,23 +1082,33 @@ onUnmounted(() => {
 
             <!-- Expanded Content -->
             <div v-if="table.isExpanded" class="border-t border-gray-200">
-              <!-- Free Answer Controls -->
-              <div v-if="table.freeAnswersEarned > 0" class="px-6 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+              <!-- Free Answer Controls - Always show -->
+              <div class="px-6 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
                 <span class="text-sm text-gray-600">
                   Free Answers: {{ table.freeAnswersGiven }} / {{ table.freeAnswersEarned }} given
                 </span>
                 <div class="flex gap-2">
                   <button
-                    v-if="table.freeAnswersGiven < table.freeAnswersEarned"
                     @click.stop="giveFreeAnswer(table.number)"
-                    class="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                    :disabled="table.freeAnswersGiven >= table.freeAnswersEarned"
+                    :class="[
+                      'px-3 py-1 text-sm rounded-lg transition-colors',
+                      table.freeAnswersGiven < table.freeAnswersEarned
+                        ? 'bg-blue-600 text-white hover:bg-blue-700'
+                        : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                    ]"
                   >
                     Give Answer
                   </button>
                   <button
-                    v-if="table.freeAnswersGiven > 0"
                     @click.stop="undoFreeAnswer(table.number)"
-                    class="px-3 py-1 text-sm bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+                    :disabled="table.freeAnswersGiven <= 0"
+                    :class="[
+                      'px-3 py-1 text-sm rounded-lg transition-colors',
+                      table.freeAnswersGiven > 0
+                        ? 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                        : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                    ]"
                   >
                     Undo
                   </button>
@@ -852,18 +1130,30 @@ onUnmounted(() => {
                       <span v-if="donation.source === 'mm'" class="ml-2 text-xs text-purple-600">(QR)</span>
                     </p>
                   </div>
-                  <button
-                    @click.stop="openEditModal(donation)"
-                    class="p-2 text-gray-400 hover:text-blue-600 transition-colors"
-                    title="Edit"
-                  >
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path>
-                    </svg>
-                  </button>
+                  <div class="flex items-center gap-1">
+                    <button
+                      @click.stop="openEditModal(donation)"
+                      class="p-2 text-gray-400 hover:text-blue-600 transition-colors"
+                      title="Edit"
+                    >
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path>
+                      </svg>
+                    </button>
+                    <button
+                      @click.stop="confirmDeleteDonation(donation)"
+                      class="p-2 text-gray-400 hover:text-red-600 transition-colors"
+                      title="Delete"
+                    >
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
+          </div>
           </div>
         </div>
       </div>
@@ -883,9 +1173,17 @@ onUnmounted(() => {
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-200">
-              <tr v-for="donation in donations" :key="donation.id" class="hover:bg-gray-50">
+              <tr
+                v-for="donation in donations"
+                :key="donation.id"
+                :class="[
+                  donation.deleted_at ? 'bg-red-50 opacity-60' : 'hover:bg-gray-50'
+                ]"
+              >
                 <td class="px-6 py-4 whitespace-nowrap">
-                  <p class="font-medium text-gray-900">{{ donation.first_name }} {{ donation.last_name }}</p>
+                  <p :class="['font-medium', donation.deleted_at ? 'text-gray-400 line-through' : 'text-gray-900']">
+                    {{ donation.first_name }} {{ donation.last_name }}
+                  </p>
                   <p v-if="donation.email" class="text-sm text-gray-500">{{ donation.email }}</p>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
@@ -894,11 +1192,18 @@ onUnmounted(() => {
                   </span>
                   <span v-else class="text-yellow-600 text-sm">Unassigned</span>
                 </td>
-                <td class="px-6 py-4 whitespace-nowrap font-medium text-green-600">
+                <td :class="['px-6 py-4 whitespace-nowrap font-medium', donation.deleted_at ? 'text-gray-400 line-through' : 'text-green-600']">
                   {{ formatCurrency(donation.amount) }}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <span
+                    v-if="donation.deleted_at"
+                    class="px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800"
+                  >
+                    DELETED
+                  </span>
+                  <span
+                    v-else
                     :class="[
                       'px-2 py-1 rounded-full text-xs font-medium',
                       donation.source === 'mm' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'
@@ -911,15 +1216,27 @@ onUnmounted(() => {
                   {{ formatDateTime(donation.created_at) }}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
-                  <button
-                    @click="openEditModal(donation)"
-                    class="p-2 text-gray-400 hover:text-blue-600 transition-colors"
-                    title="Edit"
-                  >
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path>
-                    </svg>
-                  </button>
+                  <div v-if="!donation.deleted_at" class="flex items-center gap-1">
+                    <button
+                      @click="openEditModal(donation)"
+                      class="p-2 text-gray-400 hover:text-blue-600 transition-colors"
+                      title="Edit"
+                    >
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path>
+                      </svg>
+                    </button>
+                    <button
+                      @click="confirmDeleteDonation(donation)"
+                      class="p-2 text-gray-400 hover:text-red-600 transition-colors"
+                      title="Delete"
+                    >
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                      </svg>
+                    </button>
+                  </div>
+                  <span v-else class="text-xs text-gray-400">-</span>
                 </td>
               </tr>
               <tr v-if="donations.length === 0">
@@ -946,42 +1263,69 @@ onUnmounted(() => {
         </div>
 
         <form @submit.prevent="saveEdit" class="p-6 space-y-4">
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">First Name</label>
-              <input v-model="editForm.firstName" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Last Name</label>
-              <input v-model="editForm.lastName" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
-            </div>
+          <!-- MM donations: only table assignment allowed -->
+          <div v-if="editingDonation?.source === 'mm'" class="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-4">
+            <p class="text-sm text-purple-800">
+              <strong>QR Code Donation</strong> - Only table assignment can be edited. Other fields are managed in Managed Missions.
+            </p>
           </div>
 
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Phone</label>
-              <input v-model="editForm.phone" type="tel" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+          <!-- Local donations: full editing -->
+          <template v-if="editingDonation?.source !== 'mm'">
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">First Name</label>
+                <input v-model="editForm.firstName" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Last Name</label>
+                <input v-model="editForm.lastName" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+              </div>
             </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
-              <input v-model="editForm.email" type="email" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
-            </div>
-          </div>
 
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                <input v-model="editForm.phone" type="tel" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                <input v-model="editForm.email" type="email" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+              </div>
+            </div>
+
+            <div class="grid grid-cols-4 gap-4">
+              <div class="col-span-2">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Street</label>
+                <input v-model="editForm.street" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">City</label>
+                <input v-model="editForm.city" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">State</label>
+                  <input v-model="editForm.state" type="text" maxlength="2" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">Zip</label>
+                  <input v-model="editForm.zip" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- Table # - always editable -->
           <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">Address</label>
-            <input v-model="editForm.address" type="text" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
+            <label class="block text-sm font-medium text-gray-700 mb-1">Table #</label>
+            <input v-model="editForm.tableNumber" type="number" min="1" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
           </div>
 
-          <div class="grid grid-cols-2 gap-4">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Table #</label>
-              <input v-model="editForm.tableNumber" type="number" min="1" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">Amount</label>
-              <input v-model="editForm.amount" type="number" min="0.01" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
-            </div>
+          <!-- Amount - only for local donations -->
+          <div v-if="editingDonation?.source !== 'mm'">
+            <label class="block text-sm font-medium text-gray-700 mb-1">Amount</label>
+            <input v-model="editForm.amount" type="number" min="0.01" step="0.01" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" />
           </div>
 
           <div class="flex justify-end gap-3 pt-4">
@@ -1002,6 +1346,66 @@ onUnmounted(() => {
             </button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- Payment Processing Modal -->
+    <div v-if="paymentMode !== 'idle'" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 p-4">
+      <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-8 text-center">
+        <!-- Processing State -->
+        <div v-if="paymentMode === 'processing'">
+          <div class="animate-spin w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full mx-auto mb-4"></div>
+          <h3 class="text-xl font-semibold text-gray-900 mb-2">Processing...</h3>
+          <p class="text-gray-600">Please wait</p>
+        </div>
+
+        <!-- Waiting for Card State -->
+        <div v-if="paymentMode === 'waiting'">
+          <div class="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg class="w-10 h-10 text-green-600 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
+            </svg>
+          </div>
+          <h3 class="text-xl font-semibold text-gray-900 mb-2">Waiting for Card</h3>
+          <p class="text-gray-600 mb-2">
+            <span class="font-bold text-2xl text-green-600">{{ formData.amount ? `$${parseFloat(formData.amount).toFixed(2)}` : '' }}</span>
+          </p>
+          <p class="text-gray-500 mb-6">Please tap or insert card on the terminal</p>
+          <button
+            @click="cancelPayment"
+            class="px-6 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium rounded-lg transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+
+        <!-- Success State -->
+        <div v-if="paymentMode === 'success'">
+          <div class="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg class="w-10 h-10 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+          </div>
+          <h3 class="text-xl font-semibold text-green-600 mb-2">Payment Successful!</h3>
+          <p class="text-gray-600">Donation recorded</p>
+        </div>
+
+        <!-- Error State -->
+        <div v-if="paymentMode === 'error'">
+          <div class="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg class="w-10 h-10 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+          </div>
+          <h3 class="text-xl font-semibold text-red-600 mb-2">Payment Failed</h3>
+          <p class="text-gray-600 mb-6">{{ paymentError || 'An error occurred' }}</p>
+          <button
+            @click="paymentMode = 'idle'; paymentError = ''"
+            class="px-6 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium rounded-lg transition-colors"
+          >
+            Close
+          </button>
+        </div>
       </div>
     </div>
   </div>

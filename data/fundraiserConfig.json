@@ -1,6 +1,7 @@
 {
   "pin": "1234",
-  "tripId": "603095",
+  "tripId": "94304",
+  "eventDate": "2026-02-11",
   "freeAnswerThreshold": 250,
   "maxFreeAnswersPerTable": 3,
   "refreshInterval": 10000

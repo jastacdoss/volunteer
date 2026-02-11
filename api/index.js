@@ -14,6 +14,8 @@ import {
   createDonation,
   updateDonation,
   upsertDonationByMmId,
+  deleteDonation,
+  clearAllDonations,
   getFreeAnswers,
   incrementFreeAnswer,
   decrementFreeAnswer
@@ -3823,8 +3825,72 @@ function getFundraiserConfig() {
 // Parse table number from MM Notes field
 function parseTableNumber(notes) {
   if (!notes) return null
-  const match = notes.match(/(?:table\s*:?\s*|#)?(\d+)/i)
-  return match ? parseInt(match[1], 10) : null
+
+  // Try "table X" patterns first: "table 5", "table: 5", "table #5"
+  const tableNumMatch = notes.match(/table\s*:?\s*#?(\d+)/i)
+  if (tableNumMatch) return parseInt(tableNumMatch[1], 10)
+
+  // Try hashtag pattern: "#5", "# 5"
+  const hashMatch = notes.match(/#\s*(\d+)/)
+  if (hashMatch) return parseInt(hashMatch[1], 10)
+
+  // Try text-based table numbers: "table fourteen"
+  const textNumbers = {
+    'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+    'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+    'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14, 'fifteen': 15,
+    'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19, 'twenty': 20,
+    'twenty-one': 21, 'twenty-two': 22, 'twenty-three': 23, 'twenty-four': 24, 'twenty-five': 25,
+    'twenty-six': 26, 'twenty-seven': 27, 'twenty-eight': 28, 'twenty-nine': 29, 'thirty': 30,
+    'thirty-one': 31, 'thirty-two': 32, 'thirty-three': 33, 'thirty-four': 34, 'thirty-five': 35,
+    'thirty-six': 36, 'thirty-seven': 37, 'thirty-eight': 38, 'thirty-nine': 39, 'forty': 40,
+    'forty-one': 41, 'forty-two': 42, 'forty-three': 43, 'forty-four': 44, 'forty-five': 45,
+    'forty-six': 46, 'forty-seven': 47, 'forty-eight': 48, 'forty-nine': 49, 'fifty': 50,
+    'fifty-one': 51, 'fifty-two': 52, 'fifty-three': 53, 'fifty-four': 54, 'fifty-five': 55,
+    'fifty-six': 56, 'fifty-seven': 57, 'fifty-eight': 58, 'fifty-nine': 59, 'sixty': 60,
+    'sixty-one': 61, 'sixty-two': 62, 'sixty-three': 63, 'sixty-four': 64, 'sixty-five': 65,
+    'sixty-six': 66, 'sixty-seven': 67, 'sixty-eight': 68, 'sixty-nine': 69, 'seventy': 70,
+    'seventy-one': 71, 'seventy-two': 72, 'seventy-three': 73, 'seventy-four': 74, 'seventy-five': 75,
+    'seventy-six': 76, 'seventy-seven': 77, 'seventy-eight': 78, 'seventy-nine': 79, 'eighty': 80,
+    'eighty-one': 81, 'eighty-two': 82, 'eighty-three': 83, 'eighty-four': 84, 'eighty-five': 85,
+    'eighty-six': 86, 'eighty-seven': 87, 'eighty-eight': 88, 'eighty-nine': 89, 'ninety': 90,
+    'ninety-one': 91, 'ninety-two': 92, 'ninety-three': 93, 'ninety-four': 94, 'ninety-five': 95,
+    'ninety-six': 96, 'ninety-seven': 97, 'ninety-eight': 98, 'ninety-nine': 99, 'hundred': 100
+  }
+
+  const textMatch = notes.match(/table\s+(\w+(?:-\w+)?)/i)
+  if (textMatch) {
+    const num = textNumbers[textMatch[1].toLowerCase()]
+    if (num) return num
+  }
+
+  // Fallback: look for any standalone 1-3 digit number (likely a table number)
+  // But avoid matching things like years, amounts, etc.
+  const standaloneNum = notes.match(/\b(\d{1,3})\b/)
+  if (standaloneNum) {
+    const num = parseInt(standaloneNum[1], 10)
+    // Only return if it's a reasonable table number (1-100)
+    if (num >= 1 && num <= 100) return num
+  }
+
+  return null
+}
+
+// Parse MM date format: "/Date(1770658254682)/"
+function parseMmDate(dateStr) {
+  if (!dateStr) return null
+  const match = dateStr.match(/\/Date\((\d+)\)\//)
+  if (match) return new Date(parseInt(match[1], 10))
+  return null
+}
+
+// Check if a date is on the event date
+function isEventDate(date, eventDateStr) {
+  if (!date || !eventDateStr) return true // No filter if no date
+  const eventDate = new Date(eventDateStr + 'T00:00:00')
+  const nextDay = new Date(eventDateStr + 'T00:00:00')
+  nextDay.setDate(nextDay.getDate() + 1)
+  return date >= eventDate && date < nextDay
 }
 
 // Verify PIN
@@ -3865,30 +3931,75 @@ app.get('/api/fundraiser/donations', async (req, res) => {
 
         if (mmResponse.ok) {
           const mmData = await mmResponse.json()
-          const contributions = mmData.Contributions || []
+          const contributions = mmData.data || []
 
-          // Sync new MM donations to Supabase
+          // Sync MM donations to Supabase (filter by event date and general fund only)
           for (const contrib of contributions) {
-            const mmId = String(contrib.ContributionID)
+            // Skip deleted donations
+            if (contrib.Deleted) {
+              continue
+            }
+
+            // Skip donations marked as TRIVIA-DELETED
+            if (contrib.ReferenceNumber === 'TRIVIA-DELETED') {
+              continue
+            }
+
+            // Only sync general fund donations, not individual member donations
+            if (!contrib.IsGeneralContribution) {
+              continue
+            }
+
+            // Filter by event date
+            const createdDate = parseMmDate(contrib.CreatedDate)
+            if (!isEventDate(createdDate, config.eventDate)) {
+              continue // Skip donations not on event date
+            }
+
+            const mmId = String(contrib.Id)
+
+            // Parse table number from Notes
+            const tableNumber = parseTableNumber(contrib.Notes)
+
+            // Parse donor name (MM returns single DonorName field)
+            const donorName = contrib.DonorName || 'Anonymous'
+            const nameParts = donorName.trim().split(/\s+/)
+            const firstName = nameParts[0] || ''
+            const lastName = nameParts.slice(1).join(' ') || ''
+
+            // Check if donation exists - preserve source and table_number if already set
             const existing = await getDonationByMmId(mmId)
 
-            if (!existing) {
-              // Parse table number from Notes
-              const tableNumber = parseTableNumber(contrib.Notes)
-
-              await upsertDonationByMmId({
-                source: 'mm',
-                mm_id: mmId,
-                first_name: contrib.FirstName || '',
-                last_name: contrib.LastName || '',
-                phone: contrib.PhoneNumber || null,
-                email: contrib.Email || null,
-                address: contrib.Address || null,
-                table_number: tableNumber,
-                amount: parseFloat(contrib.Amount) || 0,
-                notes: contrib.Notes || null
-              })
+            // Skip if donation has been deleted locally
+            if (existing?.deleted_at) {
+              continue
             }
+
+            const finalSource = existing?.source || 'mm'  // Preserve original source (local vs mm)
+            const finalTableNumber = (existing && existing.table_number !== null)
+              ? existing.table_number  // Preserve manually-set table number
+              : tableNumber            // Use parsed value from MM Notes
+
+            // Build street from Address1 + Address2
+            const street = [contrib.Address1, contrib.Address2].filter(Boolean).join(' ') || null
+
+            // Upsert to capture any updates (like Notes changes)
+            await upsertDonationByMmId({
+              source: finalSource,
+              mm_id: mmId,
+              mm_created_at: createdDate ? createdDate.toISOString() : null,
+              first_name: firstName,
+              last_name: lastName,
+              phone: contrib.PhoneNumber || null,
+              email: contrib.EmailAddress || null,
+              street: street,
+              city: contrib.City || null,
+              state: contrib.State || null,
+              zip: contrib.PostalCode || null,
+              table_number: finalTableNumber,
+              amount: parseFloat(contrib.ContributionAmount) || 0,
+              notes: contrib.Notes || null
+            })
           }
         } else {
           console.error('[Fundraiser] MM API error:', mmResponse.status, await mmResponse.text())
@@ -3898,8 +4009,8 @@ app.get('/api/fundraiser/donations', async (req, res) => {
       }
     }
 
-    // Get all donations from Supabase
-    const donations = await getDonations()
+    // Get all donations from Supabase (filtered by event date)
+    const donations = await getDonations(config.eventDate)
     const freeAnswers = await getFreeAnswers()
 
     // Group donations by table
@@ -3940,6 +4051,7 @@ app.get('/api/fundraiser/donations', async (req, res) => {
       donations,
       tables: Object.values(tables).sort((a, b) => a.tableNumber - b.tableNumber),
       unmatched,
+      freeAnswersGiven: freeAnswersMap,
       config: {
         freeAnswerThreshold: config.freeAnswerThreshold,
         maxFreeAnswersPerTable: config.maxFreeAnswersPerTable,
@@ -3955,7 +4067,18 @@ app.get('/api/fundraiser/donations', async (req, res) => {
 // Create new donation
 app.post('/api/fundraiser/donations', async (req, res) => {
   try {
-    const { firstName, lastName, phone, email, address, tableNumber, amount, notes } = req.body
+    // Accept both camelCase and snake_case
+    const firstName = req.body.firstName || req.body.first_name
+    const lastName = req.body.lastName || req.body.last_name
+    const phone = req.body.phone
+    const email = req.body.email
+    const street = req.body.street
+    const city = req.body.city
+    const state = req.body.state
+    const zip = req.body.zip
+    const tableNumber = req.body.tableNumber || req.body.table_number
+    const amount = req.body.amount
+    const notes = req.body.notes
 
     if (!firstName || !lastName || amount === undefined) {
       return res.status(400).json({ error: 'First name, last name, and amount are required' })
@@ -3968,7 +4091,10 @@ app.post('/api/fundraiser/donations', async (req, res) => {
       last_name: lastName,
       phone: phone || null,
       email: email || null,
-      address: address || null,
+      street: street || null,
+      city: city || null,
+      state: state || null,
+      zip: zip || null,
       table_number: tableNumber ? parseInt(tableNumber, 10) : null,
       amount: parseFloat(amount),
       notes: notes || null
@@ -3977,14 +4103,37 @@ app.post('/api/fundraiser/donations', async (req, res) => {
     // Also create in Managed Missions
     const mmApiKey = process.env.MM_API_KEY
     const config = getFundraiserConfig()
+    let finalDonation = donation
+
+    console.log('[Fundraiser] MM_API_KEY configured:', !!mmApiKey)
 
     if (mmApiKey) {
       try {
-        // Build notes with table number
-        let mmNotes = tableNumber ? `Table ${tableNumber}` : ''
+        // MM expects DonorName as a combined field
+        const donorName = [firstName, lastName].filter(Boolean).join(' ') || 'Anonymous'
+
+        // Build notes: "Donor Name - TRIVIA TABLE XX"
+        let mmNotes = `${donorName} - TRIVIA TABLE ${tableNumber || '?'}`
         if (notes) {
-          mmNotes = mmNotes ? `${mmNotes} - ${notes}` : notes
+          mmNotes = `${mmNotes} - ${notes}`
         }
+
+        const mmPayload = {
+          MissionTripID: parseInt(config.tripId, 10),
+          DonorName: donorName,
+          PhoneNumber: phone || '',
+          EmailAddress: email || '',
+          Address1: street || '',
+          City: city || '',
+          State: state || '',
+          PostalCode: zip || '',
+          ContributionAmount: parseFloat(amount),
+          DepositDate: new Date().toISOString().split('T')[0],
+          Notes: mmNotes,
+          ReferenceNumber: 'TRIVIA'
+        }
+
+        console.log('[Fundraiser] Creating MM contribution:', JSON.stringify(mmPayload))
 
         const mmResponse = await fetch(
           'https://app.managedmissions.com/API/ContributionAPI/Create',
@@ -3994,34 +4143,31 @@ app.post('/api/fundraiser/donations', async (req, res) => {
               'Authorization': `Bearer ${mmApiKey}`,
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-              MissionTripID: parseInt(config.tripId, 10),
-              FirstName: firstName,
-              LastName: lastName,
-              PhoneNumber: phone || '',
-              Email: email || '',
-              Address: address || '',
-              Amount: parseFloat(amount),
-              Notes: mmNotes
-            })
+            body: JSON.stringify(mmPayload)
           }
         )
 
+        const mmText = await mmResponse.text()
+        console.log('[Fundraiser] MM create response:', mmResponse.status, mmText)
+
         if (mmResponse.ok) {
-          const mmData = await mmResponse.json()
-          // Update Supabase record with MM ID
-          if (mmData.ContributionID) {
-            await updateDonation(donation.id, { mm_id: String(mmData.ContributionID) })
+          const mmData = JSON.parse(mmText)
+          // Update Supabase record with MM ID and return updated donation
+          // MM returns { status: 0, data: { Id: ... } }
+          const mmId = mmData.data?.Id || mmData.ContributionID
+          if (mmId) {
+            finalDonation = await updateDonation(donation.id, { mm_id: String(mmId) })
+            console.log('[Fundraiser] Updated donation with MM ID:', mmId)
           }
         } else {
-          console.error('[Fundraiser] MM create error:', mmResponse.status, await mmResponse.text())
+          console.error('[Fundraiser] MM create error:', mmResponse.status, mmText)
         }
       } catch (mmErr) {
         console.error('[Fundraiser] MM create error:', mmErr)
       }
     }
 
-    res.json(donation)
+    res.json(finalDonation)
   } catch (err) {
     console.error('[Fundraiser] Create donation error:', err)
     res.status(500).json({ error: 'Failed to create donation' })
@@ -4032,15 +4178,20 @@ app.post('/api/fundraiser/donations', async (req, res) => {
 app.patch('/api/fundraiser/donations/:id', async (req, res) => {
   try {
     const { id } = req.params
-    const { firstName, lastName, phone, email, address, tableNumber, amount, notes } = req.body
+    const { firstName, lastName, phone, email, street, city, state, zip, tableNumber, table_number, amount, notes } = req.body
 
     const updates = {}
     if (firstName !== undefined) updates.first_name = firstName
     if (lastName !== undefined) updates.last_name = lastName
     if (phone !== undefined) updates.phone = phone || null
     if (email !== undefined) updates.email = email || null
-    if (address !== undefined) updates.address = address || null
-    if (tableNumber !== undefined) updates.table_number = tableNumber ? parseInt(tableNumber, 10) : null
+    if (street !== undefined) updates.street = street || null
+    if (city !== undefined) updates.city = city || null
+    if (state !== undefined) updates.state = state || null
+    if (zip !== undefined) updates.zip = zip || null
+    // Accept both tableNumber and table_number
+    const tblNum = tableNumber !== undefined ? tableNumber : table_number
+    if (tblNum !== undefined) updates.table_number = tblNum ? parseInt(tblNum, 10) : null
     if (amount !== undefined) updates.amount = parseFloat(amount)
     if (notes !== undefined) updates.notes = notes || null
 
@@ -4050,10 +4201,11 @@ app.patch('/api/fundraiser/donations/:id', async (req, res) => {
     const mmApiKey = process.env.MM_API_KEY
     if (mmApiKey && donation.mm_id) {
       try {
-        // Build notes with table number
-        let mmNotes = donation.table_number ? `Table ${donation.table_number}` : ''
+        // Build notes: "Donor Name - TRIVIA TABLE XX"
+        const donorName = [donation.first_name, donation.last_name].filter(Boolean).join(' ') || 'Anonymous'
+        let mmNotes = `${donorName} - TRIVIA TABLE ${donation.table_number || '?'}`
         if (donation.notes) {
-          mmNotes = mmNotes ? `${mmNotes} - ${donation.notes}` : donation.notes
+          mmNotes = `${mmNotes} - ${donation.notes}`
         }
 
         const mmResponse = await fetch(
@@ -4065,14 +4217,17 @@ app.patch('/api/fundraiser/donations/:id', async (req, res) => {
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-              ContributionID: parseInt(donation.mm_id, 10),
-              FirstName: donation.first_name,
-              LastName: donation.last_name,
+              GetById: parseInt(donation.mm_id, 10),
+              DonorName: donorName,
               PhoneNumber: donation.phone || '',
-              Email: donation.email || '',
-              Address: donation.address || '',
-              Amount: parseFloat(donation.amount),
-              Notes: mmNotes
+              EmailAddress: donation.email || '',
+              Address1: donation.street || '',
+              City: donation.city || '',
+              State: donation.state || '',
+              PostalCode: donation.zip || '',
+              ContributionAmount: parseFloat(donation.amount),
+              Notes: mmNotes,
+              ReferenceNumber: 'TRIVIA'
             })
           }
         )
@@ -4092,6 +4247,71 @@ app.patch('/api/fundraiser/donations/:id', async (req, res) => {
   }
 })
 
+// Delete donation (soft-delete: mark as TRIVIA-DELETED)
+app.delete('/api/fundraiser/donations/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+
+    // First get the donation
+    const allDonations = await getDonations()
+    const donation = allDonations.find(d => d.id === id)
+
+    if (!donation) {
+      return res.status(404).json({ error: 'Donation not found' })
+    }
+
+    // Update MM reference to TRIVIA-DELETED if it has an mm_id
+    const mmApiKey = process.env.MM_API_KEY
+    if (mmApiKey && donation.mm_id) {
+      try {
+        const mmResponse = await fetch(
+          'https://app.managedmissions.com/API/ContributionAPI/Update',
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${mmApiKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              GetById: parseInt(donation.mm_id, 10),
+              ReferenceNumber: 'TRIVIA-DELETED'
+            })
+          }
+        )
+
+        const mmText = await mmResponse.text()
+        console.log('[Fundraiser] MM mark-deleted response:', mmResponse.status, mmText)
+
+        if (!mmResponse.ok) {
+          console.error('[Fundraiser] MM mark-deleted failed:', mmResponse.status, mmText)
+        }
+      } catch (mmErr) {
+        console.error('[Fundraiser] MM mark-deleted error:', mmErr)
+      }
+    }
+
+    // Delete from Supabase
+    const deletedDonation = await deleteDonation(id)
+
+    res.json({ success: true, deleted: deletedDonation })
+  } catch (err) {
+    console.error('[Fundraiser] Delete donation error:', err)
+    res.status(500).json({ error: 'Failed to delete donation' })
+  }
+})
+
+// Clear all donations (for testing/reset)
+app.post('/api/fundraiser/clear-all', async (req, res) => {
+  try {
+    await clearAllDonations()
+    console.log('[Fundraiser] Cleared all donations and free answers')
+    res.json({ success: true, message: 'All donations cleared' })
+  } catch (err) {
+    console.error('[Fundraiser] Clear all error:', err)
+    res.status(500).json({ error: 'Failed to clear donations' })
+  }
+})
+
 // PCO phone lookup
 app.get('/api/fundraiser/lookup-phone/:phone', async (req, res) => {
   try {
@@ -4102,17 +4322,18 @@ app.get('/api/fundraiser/lookup-phone/:phone', async (req, res) => {
       return res.json({ matches: [] })
     }
 
-    const pcoSecret = process.env.PCO_SECRET
-    if (!pcoSecret) {
+    if (!process.env.PCO_APP_ID || !process.env.PCO_SECRET) {
       return res.status(500).json({ error: 'PCO not configured' })
     }
 
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
     // Search PCO for matching phone numbers
     const pcoResponse = await fetch(
-      `https://api.planningcenteronline.com/people/v2/people?where[search_phone_number]=${cleanPhone}&include=emails,addresses`,
+      `https://api.planningcenteronline.com/people/v2/people?where[search_phone_number]=${cleanPhone}&include=emails,phone_numbers,addresses`,
       {
         headers: {
-          'Authorization': `Basic ${Buffer.from(pcoSecret).toString('base64')}`,
+          'Authorization': `Basic ${credentials}`,
           'Content-Type': 'application/json'
         }
       }
@@ -4129,6 +4350,7 @@ app.get('/api/fundraiser/lookup-phone/:phone', async (req, res) => {
 
     // Build lookup maps for included resources
     const emailsMap = {}
+    const phonesMap = {}
     const addressesMap = {}
 
     for (const item of included) {
@@ -4138,30 +4360,57 @@ app.get('/api/fundraiser/lookup-phone/:phone', async (req, res) => {
           if (!emailsMap[personId]) emailsMap[personId] = []
           emailsMap[personId].push(item.attributes.address)
         }
+      } else if (item.type === 'PhoneNumber') {
+        const personId = item.relationships?.person?.data?.id
+        if (personId) {
+          if (!phonesMap[personId]) phonesMap[personId] = []
+          phonesMap[personId].push(item.attributes.number)
+        }
       } else if (item.type === 'Address') {
         const personId = item.relationships?.person?.data?.id
         if (personId) {
           if (!addressesMap[personId]) addressesMap[personId] = []
           const addr = item.attributes
           addressesMap[personId].push({
-            street: addr.street,
+            street: addr.street_line_1 || null,
             city: addr.city,
             state: addr.state,
-            zip: addr.zip,
-            full: [addr.street, addr.city, addr.state, addr.zip].filter(Boolean).join(', ')
+            zip: addr.zip
           })
         }
       }
     }
 
+    // Get existing donations to find table numbers for repeat donors
+    const existingDonations = await getDonations()
+    const donorTableMap = {}
+    for (const d of existingDonations) {
+      if (d.table_number && d.phone) {
+        const cleanDonorPhone = d.phone.replace(/\D/g, '')
+        if (!donorTableMap[cleanDonorPhone]) {
+          donorTableMap[cleanDonorPhone] = d.table_number
+        }
+      }
+    }
+
     // Format matches
-    const matches = people.map(person => ({
-      id: person.id,
-      firstName: person.attributes.first_name,
-      lastName: person.attributes.last_name,
-      email: (emailsMap[person.id] || [])[0] || null,
-      address: (addressesMap[person.id] || [])[0]?.full || null
-    }))
+    const matches = people.map(person => {
+      const addr = (addressesMap[person.id] || [])[0] || {}
+      const personPhone = (phonesMap[person.id] || [])[0] || null
+      const cleanPersonPhone = personPhone ? personPhone.replace(/\D/g, '') : ''
+      return {
+        id: person.id,
+        firstName: person.attributes.first_name,
+        lastName: person.attributes.last_name,
+        email: (emailsMap[person.id] || [])[0] || null,
+        phone: personPhone,
+        street: addr.street || null,
+        city: addr.city || null,
+        state: addr.state || null,
+        zip: addr.zip || null,
+        tableNumber: donorTableMap[cleanPersonPhone] || null
+      }
+    })
 
     res.json({ matches })
   } catch (err) {
@@ -4192,6 +4441,275 @@ app.post('/api/fundraiser/free-answer', async (req, res) => {
   } catch (err) {
     console.error('[Fundraiser] Free answer error:', err)
     res.status(500).json({ error: 'Failed to update free answer' })
+  }
+})
+
+// ========================================
+// Square Terminal Payment
+// ========================================
+
+// Get Square API base URL (sandbox vs production)
+function getSquareBaseUrl() {
+  const env = process.env.SQUARE_ENVIRONMENT || 'sandbox'
+  return env === 'production'
+    ? 'https://connect.squareup.com'
+    : 'https://connect.squareupsandbox.com'
+}
+
+// Create a Terminal Checkout
+app.post('/api/fundraiser/checkout', async (req, res) => {
+  try {
+    const { amount, donorInfo } = req.body
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Valid amount is required' })
+    }
+
+    const squareToken = process.env.SQUARE_ACCESS_TOKEN
+    const deviceId = process.env.SQUARE_DEVICE_ID
+    const locationId = process.env.SQUARE_LOCATION_ID
+
+    if (!squareToken || !deviceId || !locationId) {
+      return res.status(500).json({ error: 'Square not configured' })
+    }
+
+    const squareBaseUrl = getSquareBaseUrl()
+    console.log('[Fundraiser] Using Square API:', squareBaseUrl)
+
+    // Create a unique idempotency key
+    const idempotencyKey = `trivia-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+
+    // Build note for the checkout
+    const tableNumber = donorInfo?.tableNumber || '?'
+    const checkoutNote = `TRIVIA NIGHT TABLE ${tableNumber}`
+
+    const squareResponse = await fetch(
+      `${squareBaseUrl}/v2/terminals/checkouts`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${squareToken}`,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-01-18'
+        },
+        body: JSON.stringify({
+          idempotency_key: idempotencyKey,
+          checkout: {
+            amount_money: {
+              amount: Math.round(amount * 100), // Convert to cents
+              currency: 'USD'
+            },
+            device_options: {
+              device_id: deviceId,
+              skip_receipt_screen: true,
+              tip_settings: {
+                allow_tipping: false
+              }
+            },
+            note: checkoutNote,
+            payment_type: 'CARD_PRESENT'
+          }
+        })
+      }
+    )
+
+    const squareData = await squareResponse.json()
+
+    if (!squareResponse.ok) {
+      console.error('[Fundraiser] Square checkout error:', squareData)
+      return res.status(500).json({ error: 'Failed to create checkout', details: squareData })
+    }
+
+    console.log('[Fundraiser] Square checkout created:', squareData.checkout?.id)
+
+    res.json({
+      checkoutId: squareData.checkout?.id,
+      status: squareData.checkout?.status
+    })
+  } catch (err) {
+    console.error('[Fundraiser] Square checkout error:', err)
+    res.status(500).json({ error: 'Failed to create checkout' })
+  }
+})
+
+// Check Terminal Checkout status
+app.get('/api/fundraiser/checkout/:checkoutId', async (req, res) => {
+  try {
+    const { checkoutId } = req.params
+
+    const squareToken = process.env.SQUARE_ACCESS_TOKEN
+
+    if (!squareToken) {
+      return res.status(500).json({ error: 'Square not configured' })
+    }
+
+    const squareBaseUrl = getSquareBaseUrl()
+    const squareResponse = await fetch(
+      `${squareBaseUrl}/v2/terminals/checkouts/${checkoutId}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${squareToken}`,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-01-18'
+        }
+      }
+    )
+
+    const squareData = await squareResponse.json()
+
+    if (!squareResponse.ok) {
+      console.error('[Fundraiser] Square status error:', squareData)
+      return res.status(500).json({ error: 'Failed to get checkout status', details: squareData })
+    }
+
+    res.json({
+      checkoutId: squareData.checkout?.id,
+      status: squareData.checkout?.status,
+      paymentIds: squareData.checkout?.payment_ids || []
+    })
+  } catch (err) {
+    console.error('[Fundraiser] Square status error:', err)
+    res.status(500).json({ error: 'Failed to get checkout status' })
+  }
+})
+
+// Cancel Terminal Checkout
+app.post('/api/fundraiser/checkout/:checkoutId/cancel', async (req, res) => {
+  try {
+    const { checkoutId } = req.params
+
+    const squareToken = process.env.SQUARE_ACCESS_TOKEN
+
+    if (!squareToken) {
+      return res.status(500).json({ error: 'Square not configured' })
+    }
+
+    const squareBaseUrl = getSquareBaseUrl()
+    const squareResponse = await fetch(
+      `${squareBaseUrl}/v2/terminals/checkouts/${checkoutId}/cancel`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${squareToken}`,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-01-18'
+        }
+      }
+    )
+
+    const squareData = await squareResponse.json()
+
+    if (!squareResponse.ok) {
+      console.error('[Fundraiser] Square cancel error:', squareData)
+      return res.status(500).json({ error: 'Failed to cancel checkout', details: squareData })
+    }
+
+    res.json({ success: true, status: squareData.checkout?.status })
+  } catch (err) {
+    console.error('[Fundraiser] Square cancel error:', err)
+    res.status(500).json({ error: 'Failed to cancel checkout' })
+  }
+})
+
+// List paired Square Terminal devices
+app.get('/api/fundraiser/devices', async (req, res) => {
+  try {
+    const squareToken = process.env.SQUARE_ACCESS_TOKEN
+
+    if (!squareToken) {
+      return res.status(500).json({ error: 'Square not configured' })
+    }
+
+    const squareBaseUrl = getSquareBaseUrl()
+
+    // Search for device codes (paired devices)
+    const squareResponse = await fetch(
+      `${squareBaseUrl}/v2/devices/codes`,
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${squareToken}`,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-01-18'
+        }
+      }
+    )
+
+    const squareData = await squareResponse.json()
+
+    if (!squareResponse.ok) {
+      console.error('[Fundraiser] Square list devices error:', squareData)
+      return res.status(500).json({ error: 'Failed to list devices', details: squareData })
+    }
+
+    // Filter for paired devices and return relevant info
+    const devices = (squareData.device_codes || []).map(dc => ({
+      id: dc.id,
+      code: dc.code,
+      deviceId: dc.device_id,
+      name: dc.name,
+      status: dc.status,
+      productType: dc.product_type,
+      locationId: dc.location_id
+    }))
+
+    res.json({ devices })
+  } catch (err) {
+    console.error('[Fundraiser] Square list devices error:', err)
+    res.status(500).json({ error: 'Failed to list devices' })
+  }
+})
+
+// Create a device pairing code for Square Terminal
+app.post('/api/fundraiser/device-code', async (req, res) => {
+  try {
+    const squareToken = process.env.SQUARE_ACCESS_TOKEN
+    const locationId = process.env.SQUARE_LOCATION_ID
+
+    if (!squareToken || !locationId) {
+      return res.status(500).json({ error: 'Square not configured' })
+    }
+
+    const squareBaseUrl = getSquareBaseUrl()
+    const idempotencyKey = `device-code-${Date.now()}`
+
+    const squareResponse = await fetch(
+      `${squareBaseUrl}/v2/devices/codes`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${squareToken}`,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-01-18'
+        },
+        body: JSON.stringify({
+          idempotency_key: idempotencyKey,
+          device_code: {
+            product_type: 'TERMINAL_API',
+            location_id: locationId,
+            name: 'Trivia Night Terminal'
+          }
+        })
+      }
+    )
+
+    const squareData = await squareResponse.json()
+
+    if (!squareResponse.ok) {
+      console.error('[Fundraiser] Square device code error:', squareData)
+      return res.status(500).json({ error: 'Failed to create device code', details: squareData })
+    }
+
+    console.log('[Fundraiser] Device code created:', squareData.device_code?.code)
+
+    res.json({
+      code: squareData.device_code?.code,
+      deviceId: squareData.device_code?.device_id,
+      status: squareData.device_code?.status
+    })
+  } catch (err) {
+    console.error('[Fundraiser] Square device code error:', err)
+    res.status(500).json({ error: 'Failed to create device code' })
   }
 })
 
