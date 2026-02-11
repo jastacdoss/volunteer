@@ -4492,7 +4492,8 @@ app.post('/api/fundraiser/checkout', async (req, res) => {
 
     // Build note for the checkout
     const tableNumber = donorInfo?.tableNumber || '?'
-    const checkoutNote = `TRIVIA NIGHT TABLE ${tableNumber}`
+    const donorName = [donorInfo?.firstName, donorInfo?.lastName].filter(Boolean).join(' ') || 'Guest'
+    const checkoutNote = `${donorName} - TRIVIA NIGHT TABLE ${tableNumber}`
 
     const squareResponse = await fetch(
       `${squareBaseUrl}/v2/terminals/checkouts`,
