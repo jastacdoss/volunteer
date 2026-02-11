@@ -110,6 +110,7 @@ const isEditing = ref(false)
 
 // Table detail modal state
 const selectedTable = ref<TableSummary | null>(null)
+const freeAnswerLoading = ref<number | null>(null) // Track which table is loading
 
 // Payment state
 const paymentMode = ref<'idle' | 'processing' | 'waiting' | 'success' | 'error'>('idle')
@@ -532,6 +533,7 @@ function closeTableModal() {
 }
 
 async function giveFreeAnswer(tableNumber: number) {
+  freeAnswerLoading.value = tableNumber
   try {
     const response = await fetch('/api/fundraiser/free-answer', {
       method: 'POST',
@@ -548,10 +550,13 @@ async function giveFreeAnswer(tableNumber: number) {
     }
   } catch (error) {
     console.error('Error giving free answer:', error)
+  } finally {
+    freeAnswerLoading.value = null
   }
 }
 
 async function undoFreeAnswer(tableNumber: number) {
+  freeAnswerLoading.value = tableNumber
   try {
     const response = await fetch('/api/fundraiser/free-answer', {
       method: 'POST',
@@ -568,6 +573,8 @@ async function undoFreeAnswer(tableNumber: number) {
     }
   } catch (error) {
     console.error('Error undoing free answer:', error)
+  } finally {
+    freeAnswerLoading.value = null
   }
 }
 
@@ -844,11 +851,11 @@ onUnmounted(() => {
           <h2 class="text-lg font-semibold text-gray-900 mb-4">Add Donation</h2>
 
           <form @submit.prevent class="space-y-4">
-            <!-- Row 1: Phone and Email -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Row 1: Phone, First Name, Last Name -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
               <!-- Phone with PCO Lookup -->
               <div class="relative">
-                <label class="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Phone *</label>
                 <div class="relative">
                   <input
                     v-model="formData.phone"
@@ -882,19 +889,6 @@ onUnmounted(() => {
                 </div>
               </div>
 
-              <!-- Email -->
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                <input
-                  v-model="formData.email"
-                  type="email"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-            </div>
-
-            <!-- Row 2: First Name and Last Name -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <!-- First Name -->
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">First Name *</label>
@@ -916,52 +910,8 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Row 3: Address fields -->
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <!-- Street -->
-              <div class="md:col-span-2">
-                <label class="block text-sm font-medium text-gray-700 mb-1">Street</label>
-                <input
-                  v-model="formData.street"
-                  type="text"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-
-              <!-- City -->
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">City</label>
-                <input
-                  v-model="formData.city"
-                  type="text"
-                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-              </div>
-
-              <!-- State/Zip -->
-              <div class="grid grid-cols-2 gap-2">
-                <div>
-                  <label class="block text-sm font-medium text-gray-700 mb-1">State</label>
-                  <input
-                    v-model="formData.state"
-                    type="text"
-                    maxlength="2"
-                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  />
-                </div>
-                <div>
-                  <label class="block text-sm font-medium text-gray-700 mb-1">Zip</label>
-                  <input
-                    v-model="formData.zip"
-                    type="text"
-                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <!-- Row 4: Table # and Amount -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Row 2: Table #, Amount, Email -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
               <!-- Table Number -->
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">Table # *</label>
@@ -986,6 +936,60 @@ onUnmounted(() => {
                     class="w-full pl-7 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
                 </div>
+              </div>
+
+              <!-- Email -->
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                <input
+                  v-model="formData.email"
+                  type="email"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+            </div>
+
+            <!-- Row 3: Street, City, State, Zip -->
+            <div class="grid grid-cols-1 md:grid-cols-6 gap-4">
+              <!-- Street -->
+              <div class="md:col-span-2">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Street</label>
+                <input
+                  v-model="formData.street"
+                  type="text"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+
+              <!-- City -->
+              <div class="md:col-span-2">
+                <label class="block text-sm font-medium text-gray-700 mb-1">City</label>
+                <input
+                  v-model="formData.city"
+                  type="text"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+
+              <!-- State -->
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">State</label>
+                <input
+                  v-model="formData.state"
+                  type="text"
+                  maxlength="2"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+
+              <!-- Zip -->
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Zip</label>
+                <input
+                  v-model="formData.zip"
+                  type="text"
+                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
               </div>
             </div>
 
@@ -1110,15 +1114,19 @@ onUnmounted(() => {
                     <div class="flex items-center justify-center gap-2">
                       <button
                         @click="giveFreeAnswer(table.number)"
-                        :disabled="table.freeAnswersGiven >= table.freeAnswersEarned"
+                        :disabled="table.freeAnswersGiven >= table.freeAnswersEarned || freeAnswerLoading === table.number"
                         :class="[
-                          'px-3 py-1.5 text-sm font-medium rounded-lg transition-colors',
-                          table.freeAnswersGiven < table.freeAnswersEarned
+                          'px-3 py-1.5 text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5',
+                          table.freeAnswersGiven < table.freeAnswersEarned && freeAnswerLoading !== table.number
                             ? 'bg-green-600 hover:bg-green-700 text-white'
                             : 'bg-gray-100 text-gray-400 cursor-not-allowed'
                         ]"
                       >
-                        Give Answer
+                        <svg v-if="freeAnswerLoading === table.number" class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                        </svg>
+                        {{ freeAnswerLoading === table.number ? 'Giving...' : 'Give Answer' }}
                       </button>
                       <button
                         @click="openTableModal(table.number)"
@@ -1277,15 +1285,19 @@ onUnmounted(() => {
             </button>
             <button
               @click="giveFreeAnswer(selectedTable.number)"
-              :disabled="selectedTable.freeAnswersGiven >= selectedTable.freeAnswersEarned"
+              :disabled="selectedTable.freeAnswersGiven >= selectedTable.freeAnswersEarned || freeAnswerLoading === selectedTable.number"
               :class="[
-                'px-3 py-1.5 text-sm rounded-lg transition-colors',
-                selectedTable.freeAnswersGiven < selectedTable.freeAnswersEarned
+                'px-3 py-1.5 text-sm rounded-lg transition-colors flex items-center gap-1.5',
+                selectedTable.freeAnswersGiven < selectedTable.freeAnswersEarned && freeAnswerLoading !== selectedTable.number
                   ? 'bg-green-600 text-white hover:bg-green-700'
                   : 'bg-gray-100 text-gray-400 cursor-not-allowed'
               ]"
             >
-              Give Answer
+              <svg v-if="freeAnswerLoading === selectedTable.number" class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+              </svg>
+              {{ freeAnswerLoading === selectedTable.number ? 'Giving...' : 'Give Answer' }}
             </button>
           </div>
         </div>

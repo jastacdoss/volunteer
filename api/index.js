@@ -4262,8 +4262,20 @@ app.delete('/api/fundraiser/donations/:id', async (req, res) => {
 
     // Update MM reference to TRIVIA-DELETED if it has an mm_id
     const mmApiKey = process.env.MM_API_KEY
+    console.log('[Fundraiser] Delete donation - mm_id:', donation.mm_id, 'MM_API_KEY configured:', !!mmApiKey)
+
     if (mmApiKey && donation.mm_id) {
       try {
+        const config = getFundraiserConfig()
+        const updatePayload = {
+          MissionTripID: parseInt(config.tripId, 10),
+          GetById: parseInt(donation.mm_id, 10),
+          ContributionAmount: parseFloat(donation.amount),
+          DepositDate: donation.mm_created_at ? donation.mm_created_at.split('T')[0] : new Date().toISOString().split('T')[0],
+          ReferenceNumber: 'TRIVIA-DELETED'
+        }
+        console.log('[Fundraiser] MM mark-deleted payload:', JSON.stringify(updatePayload))
+
         const mmResponse = await fetch(
           'https://app.managedmissions.com/API/ContributionAPI/Update',
           {
@@ -4272,10 +4284,7 @@ app.delete('/api/fundraiser/donations/:id', async (req, res) => {
               'Authorization': `Bearer ${mmApiKey}`,
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-              GetById: parseInt(donation.mm_id, 10),
-              ReferenceNumber: 'TRIVIA-DELETED'
-            })
+            body: JSON.stringify(updatePayload)
           }
         )
 
@@ -4288,6 +4297,8 @@ app.delete('/api/fundraiser/donations/:id', async (req, res) => {
       } catch (mmErr) {
         console.error('[Fundraiser] MM mark-deleted error:', mmErr)
       }
+    } else {
+      console.log('[Fundraiser] Skipping MM update - no mm_id or no API key')
     }
 
     // Delete from Supabase
