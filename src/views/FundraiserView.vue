@@ -108,6 +108,9 @@ const editForm = ref({
 })
 const isEditing = ref(false)
 
+// Table detail modal state
+const selectedTable = ref<TableSummary | null>(null)
+
 // Payment state
 const paymentMode = ref<'idle' | 'processing' | 'waiting' | 'success' | 'error'>('idle')
 const currentCheckoutId = ref<string | null>(null)
@@ -517,11 +520,15 @@ async function cancelPayment() {
 // Table Actions
 // ========================================
 
-function toggleTable(tableNumber: number) {
+function openTableModal(tableNumber: number) {
   const table = tables.value.find(t => t.number === tableNumber)
   if (table) {
-    table.isExpanded = !table.isExpanded
+    selectedTable.value = table
   }
+}
+
+function closeTableModal() {
+  selectedTable.value = null
 }
 
 async function giveFreeAnswer(tableNumber: number) {
@@ -534,6 +541,10 @@ async function giveFreeAnswer(tableNumber: number) {
 
     if (response.ok) {
       await fetchDonations()
+      // Update selected table if it's open
+      if (selectedTable.value?.number === tableNumber) {
+        selectedTable.value = tables.value.find(t => t.number === tableNumber) || null
+      }
     }
   } catch (error) {
     console.error('Error giving free answer:', error)
@@ -550,6 +561,10 @@ async function undoFreeAnswer(tableNumber: number) {
 
     if (response.ok) {
       await fetchDonations()
+      // Update selected table if it's open
+      if (selectedTable.value?.number === tableNumber) {
+        selectedTable.value = tables.value.find(t => t.number === tableNumber) || null
+      }
     }
   } catch (error) {
     console.error('Error undoing free answer:', error)
@@ -631,6 +646,10 @@ async function saveEdit() {
     if (response.ok) {
       closeEditModal()
       await fetchDonations()
+      // Update selected table if it's open
+      if (selectedTable.value) {
+        selectedTable.value = tables.value.find(t => t.number === selectedTable.value!.number) || null
+      }
     }
   } catch (error) {
     console.error('Error saving edit:', error)
@@ -658,6 +677,10 @@ async function confirmDeleteDonation(donation: Donation) {
 
     if (response.ok) {
       await fetchDonations()
+      // Update selected table if it's open
+      if (selectedTable.value) {
+        selectedTable.value = tables.value.find(t => t.number === selectedTable.value!.number) || null
+      }
     } else {
       alert('Failed to delete donation')
     }
@@ -1034,126 +1057,80 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- Table Cards -->
-        <div>
-          <h2 class="text-lg font-semibold text-gray-900 mb-4">Tables ({{ sortedTables.length }})</h2>
+        <!-- Tables Summary -->
+        <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <div class="px-6 py-4 border-b border-gray-200">
+            <h2 class="text-lg font-semibold text-gray-900">Tables ({{ sortedTables.length }})</h2>
+          </div>
 
-          <div v-if="sortedTables.length === 0" class="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center">
+          <div v-if="sortedTables.length === 0" class="p-8 text-center">
             <p class="text-gray-500">No donations yet. Add a donation above to get started.</p>
           </div>
 
-          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            <div v-for="table in sortedTables" :key="table.number" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <!-- Table Header -->
-            <button
-              @click="toggleTable(table.number)"
-              class="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors"
-            >
-              <div class="flex items-center gap-4">
-                <span class="text-2xl font-bold text-gray-900">Table {{ table.number }}</span>
-                <span class="text-lg font-semibold text-green-600">{{ formatCurrency(table.total) }}</span>
-                <span class="text-sm text-gray-500">({{ table.donations.length }} donations)</span>
-              </div>
-
-              <div class="flex items-center gap-4">
-                <!-- Free Answers Summary -->
-                <span
-                  :class="[
-                    'px-3 py-1 rounded-full text-xs font-medium',
-                    table.freeAnswersEarned > 0
-                      ? (table.freeAnswersGiven >= table.freeAnswersEarned ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800')
-                      : 'bg-gray-100 text-gray-600'
-                  ]"
-                >
-                  Free Answers: {{ table.freeAnswersGiven }}/{{ table.freeAnswersEarned }}
-                </span>
-
-                <!-- Expand/Collapse Icon -->
-                <svg
-                  :class="['w-5 h-5 text-gray-400 transition-transform', table.isExpanded ? 'rotate-180' : '']"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                </svg>
-              </div>
-            </button>
-
-            <!-- Expanded Content -->
-            <div v-if="table.isExpanded" class="border-t border-gray-200">
-              <!-- Free Answer Controls - Always show -->
-              <div class="px-6 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
-                <span class="text-sm text-gray-600">
-                  Free Answers: {{ table.freeAnswersGiven }} / {{ table.freeAnswersEarned }} given
-                </span>
-                <div class="flex gap-2">
-                  <button
-                    @click.stop="giveFreeAnswer(table.number)"
-                    :disabled="table.freeAnswersGiven >= table.freeAnswersEarned"
-                    :class="[
-                      'px-3 py-1 text-sm rounded-lg transition-colors',
-                      table.freeAnswersGiven < table.freeAnswersEarned
-                        ? 'bg-blue-600 text-white hover:bg-blue-700'
-                        : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                    ]"
-                  >
-                    Give Answer
-                  </button>
-                  <button
-                    @click.stop="undoFreeAnswer(table.number)"
-                    :disabled="table.freeAnswersGiven <= 0"
-                    :class="[
-                      'px-3 py-1 text-sm rounded-lg transition-colors',
-                      table.freeAnswersGiven > 0
-                        ? 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                        : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                    ]"
-                  >
-                    Undo
-                  </button>
-                </div>
-              </div>
-
-              <!-- Donations List -->
-              <div class="divide-y divide-gray-100">
-                <div
-                  v-for="donation in table.donations"
-                  :key="donation.id"
-                  class="px-6 py-3 flex items-center justify-between hover:bg-gray-50"
-                >
-                  <div>
-                    <p class="font-medium text-gray-900">{{ donation.first_name }} {{ donation.last_name }}</p>
-                    <p class="text-sm text-gray-500">
-                      {{ formatCurrency(donation.amount) }}
-                      <span class="text-gray-400">- {{ formatTime(donation.created_at) }}</span>
-                      <span v-if="donation.source === 'mm'" class="ml-2 text-xs text-purple-600">(QR)</span>
-                    </p>
-                  </div>
-                  <div class="flex items-center gap-1">
-                    <button
-                      @click.stop="openEditModal(donation)"
-                      class="p-2 text-gray-400 hover:text-blue-600 transition-colors"
-                      title="Edit"
+          <div v-else class="overflow-x-auto">
+            <table class="w-full">
+              <thead class="bg-gray-50 border-b border-gray-200">
+                <tr>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Table</th>
+                  <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Donations</th>
+                  <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
+                  <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Free Answers</th>
+                  <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-200">
+                <tr v-for="table in sortedTables" :key="table.number" class="hover:bg-gray-50">
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="text-lg font-bold text-gray-900">{{ table.number }}</span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-center text-gray-600">
+                    {{ table.donations.length }}
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-center font-medium text-green-600">
+                    {{ formatCurrency(table.total) }}
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-center">
+                    <span
+                      :class="[
+                        'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium',
+                        table.freeAnswersEarned === 0
+                          ? 'bg-gray-100 text-gray-500'
+                          : table.freeAnswersGiven >= table.freeAnswersEarned
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-blue-100 text-blue-700'
+                      ]"
                     >
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path>
+                      <svg v-if="table.freeAnswersGiven >= table.freeAnswersEarned && table.freeAnswersEarned > 0" class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path>
                       </svg>
-                    </button>
-                    <button
-                      @click.stop="confirmDeleteDonation(donation)"
-                      class="p-2 text-gray-400 hover:text-red-600 transition-colors"
-                      title="Delete"
-                    >
-                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+                      {{ table.freeAnswersGiven }}/{{ table.freeAnswersEarned }}
+                    </span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-center">
+                    <div class="flex items-center justify-center gap-2">
+                      <button
+                        @click="giveFreeAnswer(table.number)"
+                        :disabled="table.freeAnswersGiven >= table.freeAnswersEarned"
+                        :class="[
+                          'px-3 py-1.5 text-sm font-medium rounded-lg transition-colors',
+                          table.freeAnswersGiven < table.freeAnswersEarned
+                            ? 'bg-green-600 hover:bg-green-700 text-white'
+                            : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                        ]"
+                      >
+                        Give Answer
+                      </button>
+                      <button
+                        @click="openTableModal(table.number)"
+                        class="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium rounded-lg transition-colors"
+                      >
+                        Details
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -1249,6 +1226,120 @@ onUnmounted(() => {
         </div>
       </div>
     </main>
+
+    <!-- Table Detail Modal -->
+    <div v-if="selectedTable" class="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div class="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] flex flex-col">
+        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between shrink-0">
+          <div>
+            <h3 class="text-xl font-bold text-gray-900">Table {{ selectedTable.number }}</h3>
+            <p class="text-sm text-gray-500">{{ selectedTable.donations.length }} donations · {{ formatCurrency(selectedTable.total) }}</p>
+          </div>
+          <button @click="closeTableModal" class="text-gray-400 hover:text-gray-600">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Free Answer Controls -->
+        <div class="px-6 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between shrink-0">
+          <div class="flex items-center gap-3">
+            <span class="text-sm font-medium text-gray-700">Free Answers:</span>
+            <span
+              :class="[
+                'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium',
+                selectedTable.freeAnswersEarned === 0
+                  ? 'bg-gray-100 text-gray-500'
+                  : selectedTable.freeAnswersGiven >= selectedTable.freeAnswersEarned
+                    ? 'bg-green-100 text-green-700'
+                    : 'bg-blue-100 text-blue-700'
+              ]"
+            >
+              <svg v-if="selectedTable.freeAnswersGiven >= selectedTable.freeAnswersEarned && selectedTable.freeAnswersEarned > 0" class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path>
+              </svg>
+              {{ selectedTable.freeAnswersGiven }}/{{ selectedTable.freeAnswersEarned }}
+            </span>
+          </div>
+          <div class="flex gap-2">
+            <button
+              @click="undoFreeAnswer(selectedTable.number)"
+              :disabled="selectedTable.freeAnswersGiven <= 0"
+              :class="[
+                'px-3 py-1.5 text-sm rounded-lg transition-colors',
+                selectedTable.freeAnswersGiven > 0
+                  ? 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              ]"
+            >
+              Undo
+            </button>
+            <button
+              @click="giveFreeAnswer(selectedTable.number)"
+              :disabled="selectedTable.freeAnswersGiven >= selectedTable.freeAnswersEarned"
+              :class="[
+                'px-3 py-1.5 text-sm rounded-lg transition-colors',
+                selectedTable.freeAnswersGiven < selectedTable.freeAnswersEarned
+                  ? 'bg-green-600 text-white hover:bg-green-700'
+                  : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              ]"
+            >
+              Give Answer
+            </button>
+          </div>
+        </div>
+
+        <!-- Donations List -->
+        <div class="overflow-y-auto flex-1">
+          <div class="divide-y divide-gray-100">
+            <div
+              v-for="donation in selectedTable.donations"
+              :key="donation.id"
+              class="px-6 py-3 flex items-center justify-between hover:bg-gray-50"
+            >
+              <div>
+                <p class="font-medium text-gray-900">{{ donation.first_name }} {{ donation.last_name }}</p>
+                <p class="text-sm text-gray-500">
+                  {{ formatCurrency(donation.amount) }}
+                  <span class="text-gray-400">· {{ formatTime(donation.created_at) }}</span>
+                  <span v-if="donation.source === 'mm'" class="ml-2 text-xs text-purple-600">(QR)</span>
+                </p>
+              </div>
+              <div class="flex items-center gap-1">
+                <button
+                  @click="openEditModal(donation)"
+                  class="p-2 text-gray-400 hover:text-blue-600 transition-colors"
+                  title="Edit"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path>
+                  </svg>
+                </button>
+                <button
+                  @click="confirmDeleteDonation(donation)"
+                  class="p-2 text-gray-400 hover:text-red-600 transition-colors"
+                  title="Delete"
+                >
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="px-6 py-4 border-t border-gray-200 shrink-0">
+          <button
+            @click="closeTableModal"
+            class="w-full py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-lg transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- Edit Modal -->
     <div v-if="editingDonation" class="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50 p-4">
