@@ -3960,8 +3960,11 @@ app.get('/api/fundraiser/donations', async (req, res) => {
 
             const mmId = String(contrib.Id)
 
-            // Parse table number from Notes
-            const tableNumber = parseTableNumber(contrib.Notes)
+            // Get notes - check both Notes and Comments fields
+            const mmNotes = contrib.Notes || contrib.Comments || null
+
+            // Parse table number from notes
+            const tableNumber = parseTableNumber(mmNotes)
 
             // Parse donor name (MM returns single DonorName field)
             const donorName = contrib.DonorName || 'Anonymous'
@@ -4000,8 +4003,41 @@ app.get('/api/fundraiser/donations', async (req, res) => {
               zip: contrib.PostalCode || null,
               table_number: finalTableNumber,
               amount: parseFloat(contrib.ContributionAmount) || 0,
-              notes: contrib.Notes || null
+              notes: mmNotes
             })
+
+            // If table was auto-assigned and Reference isn't already TRIVIA, update MM
+            if (finalTableNumber && contrib.ReferenceNumber !== 'TRIVIA') {
+              try {
+                const depositDate = createdDate
+                  ? createdDate.toISOString().split('T')[0]
+                  : new Date().toISOString().split('T')[0]
+
+                const updateResponse = await fetch(
+                  'https://app.managedmissions.com/API/ContributionAPI/Update',
+                  {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${mmApiKey}`,
+                      'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                      GetById: parseInt(mmId, 10),
+                      MissionTripId: parseInt(config.tripId, 10),
+                      ContributionAmount: parseFloat(contrib.ContributionAmount) || 0,
+                      ReferenceNumber: 'TRIVIA',
+                      DepositDate: depositDate
+                    })
+                  }
+                )
+                if (!updateResponse.ok) {
+                  const updateText = await updateResponse.text()
+                  console.error('[Fundraiser] MM auto-update error:', updateResponse.status, updateText)
+                }
+              } catch (updateErr) {
+                console.error('[Fundraiser] MM auto-update error:', updateErr)
+              }
+            }
           }
         } else {
           console.error('[Fundraiser] MM API error:', mmResponse.status, await mmResponse.text())
