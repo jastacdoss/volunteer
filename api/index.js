@@ -4448,6 +4448,113 @@ app.get('/api/fundraiser/lookup-phone/:phone', async (req, res) => {
   }
 })
 
+// Lookup by name (last name search)
+app.get('/api/fundraiser/lookup-name/:name', async (req, res) => {
+  try {
+    const { name } = req.params
+    const searchName = name.trim()
+
+    if (searchName.length < 2) {
+      return res.json({ matches: [] })
+    }
+
+    if (!process.env.PCO_APP_ID || !process.env.PCO_SECRET) {
+      return res.status(500).json({ error: 'PCO not configured' })
+    }
+
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+    // Search PCO by name
+    const pcoResponse = await fetch(
+      `https://api.planningcenteronline.com/people/v2/people?where[search_name]=${encodeURIComponent(searchName)}&include=emails,phone_numbers,addresses&per_page=15`,
+      {
+        headers: {
+          'Authorization': `Basic ${credentials}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    )
+
+    if (!pcoResponse.ok) {
+      console.error('[Fundraiser] PCO name lookup error:', pcoResponse.status)
+      return res.json({ matches: [] })
+    }
+
+    const pcoData = await pcoResponse.json()
+    const people = pcoData.data || []
+    const included = pcoData.included || []
+
+    // Build lookup maps for included resources
+    const emailsMap = {}
+    const phonesMap = {}
+    const addressesMap = {}
+
+    for (const item of included) {
+      if (item.type === 'Email') {
+        const personId = item.relationships?.person?.data?.id
+        if (personId) {
+          if (!emailsMap[personId]) emailsMap[personId] = []
+          emailsMap[personId].push(item.attributes.address)
+        }
+      } else if (item.type === 'PhoneNumber') {
+        const personId = item.relationships?.person?.data?.id
+        if (personId) {
+          if (!phonesMap[personId]) phonesMap[personId] = []
+          phonesMap[personId].push(item.attributes.number)
+        }
+      } else if (item.type === 'Address') {
+        const personId = item.relationships?.person?.data?.id
+        if (personId) {
+          if (!addressesMap[personId]) addressesMap[personId] = []
+          const addr = item.attributes
+          addressesMap[personId].push({
+            street: addr.street_line_1 || null,
+            city: addr.city,
+            state: addr.state,
+            zip: addr.zip
+          })
+        }
+      }
+    }
+
+    // Get existing donations to find table numbers for repeat donors
+    const existingDonations = await getDonations()
+    const donorTableMap = {}
+    for (const d of existingDonations) {
+      if (d.table_number && d.phone) {
+        const cleanDonorPhone = d.phone.replace(/\D/g, '')
+        if (!donorTableMap[cleanDonorPhone]) {
+          donorTableMap[cleanDonorPhone] = d.table_number
+        }
+      }
+    }
+
+    // Format matches
+    const matches = people.map(person => {
+      const addr = (addressesMap[person.id] || [])[0] || {}
+      const personPhone = (phonesMap[person.id] || [])[0] || null
+      const cleanPersonPhone = personPhone ? personPhone.replace(/\D/g, '') : ''
+      return {
+        id: person.id,
+        firstName: person.attributes.first_name,
+        lastName: person.attributes.last_name,
+        email: (emailsMap[person.id] || [])[0] || null,
+        phone: personPhone,
+        street: addr.street || null,
+        city: addr.city || null,
+        state: addr.state || null,
+        zip: addr.zip || null,
+        tableNumber: donorTableMap[cleanPersonPhone] || null
+      }
+    })
+
+    res.json({ matches })
+  } catch (err) {
+    console.error('[Fundraiser] Name lookup error:', err)
+    res.status(500).json({ error: 'Failed to lookup name' })
+  }
+})
+
 // Give/undo free answer
 app.post('/api/fundraiser/free-answer', async (req, res) => {
   try {

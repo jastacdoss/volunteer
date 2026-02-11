@@ -171,11 +171,11 @@ let refreshInterval: ReturnType<typeof setInterval> | null = null
 // ========================================
 
 const totalRaised = computed(() => {
-  // Only count non-deleted donations
-  return donations.value.filter(d => !d.deleted_at).reduce((sum, d) => sum + d.amount, 0)
+  // Only count non-deleted donations assigned to a table
+  return donations.value.filter(d => !d.deleted_at && d.table_number).reduce((sum, d) => sum + d.amount, 0)
 })
 
-const totalDonations = computed(() => donations.value.filter(d => !d.deleted_at).length)
+const totalDonations = computed(() => donations.value.filter(d => !d.deleted_at && d.table_number).length)
 const activeDonations = computed(() => donations.value.filter(d => !d.deleted_at))
 
 const sortedTables = computed(() => {
@@ -317,7 +317,7 @@ function groupDonationsByTable() {
 }
 
 // ========================================
-// Phone Lookup
+// Phone/Name Lookup
 // ========================================
 
 let lookupTimeout: ReturnType<typeof setTimeout> | null = null
@@ -328,16 +328,25 @@ function onPhoneInput() {
   // Debounce lookup
   if (lookupTimeout) clearTimeout(lookupTimeout)
 
-  const phone = formData.value.phone.replace(/\D/g, '')
-  if (phone.length >= 10) {
-    lookupTimeout = setTimeout(() => lookupPhone(phone), 500)
+  const input = formData.value.phone.trim()
+  const digitsOnly = input.replace(/\D/g, '')
+
+  // If mostly digits (phone number), search by phone
+  // If mostly letters (name), search by name
+  const isPhoneNumber = digitsOnly.length >= 7 && digitsOnly.length >= input.length * 0.5
+  const isName = input.length >= 2 && /[a-zA-Z]{2,}/.test(input)
+
+  if (isPhoneNumber) {
+    lookupTimeout = setTimeout(() => lookupByPhone(digitsOnly), 500)
+  } else if (isName) {
+    lookupTimeout = setTimeout(() => lookupByName(input), 500)
   } else {
     pcoMatches.value = []
     showPcoDropdown.value = false
   }
 }
 
-async function lookupPhone(phone: string) {
+async function lookupByPhone(phone: string) {
   isLookingUp.value = true
   try {
     const response = await fetch(`/api/fundraiser/lookup-phone/${phone}`)
@@ -353,6 +362,22 @@ async function lookupPhone(phone: string) {
   }
 }
 
+async function lookupByName(name: string) {
+  isLookingUp.value = true
+  try {
+    const response = await fetch(`/api/fundraiser/lookup-name/${encodeURIComponent(name)}`)
+    if (response.ok) {
+      const data = await response.json()
+      pcoMatches.value = data.matches || []
+      showPcoDropdown.value = pcoMatches.value.length > 0
+    }
+  } catch (error) {
+    console.error('Name lookup error:', error)
+  } finally {
+    isLookingUp.value = false
+  }
+}
+
 function selectPcoMatch(match: PcoMatch) {
   selectedPcoMatch.value = match
   formData.value.firstName = match.firstName || ''
@@ -362,11 +387,14 @@ function selectPcoMatch(match: PcoMatch) {
   formData.value.city = match.city || ''
   formData.value.state = match.state || ''
   formData.value.zip = match.zip || ''
+  // Auto-populate phone if available from PCO
+  if (match.phone) {
+    formData.value.phone = match.phone
+  }
   // Auto-populate table number if this donor has donated before
   if (match.tableNumber) {
     formData.value.tableNumber = String(match.tableNumber)
   }
-  // Keep the phone that was searched with
   showPcoDropdown.value = false
 }
 
@@ -1231,15 +1259,15 @@ onUnmounted(() => {
           <form @submit.prevent class="space-y-4">
             <!-- Row 1: Phone, First Name, Last Name -->
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <!-- Phone with PCO Lookup -->
+              <!-- Phone/Name with PCO Lookup -->
               <div class="relative">
-                <label class="block text-sm font-medium text-gray-700 mb-1">Phone *</label>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Phone or Last Name *</label>
                 <div class="relative">
                   <input
                     v-model="formData.phone"
                     @input="onPhoneInput"
-                    type="tel"
-                    placeholder="(904) 555-1234"
+                    type="text"
+                    placeholder="Phone or Last Name"
                     class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
                   <span v-if="isLookingUp" class="absolute right-3 top-2.5 text-gray-400">
