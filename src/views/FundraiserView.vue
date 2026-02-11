@@ -23,6 +23,7 @@ interface Donation {
   reference_number?: string
   created_at: string
   deleted_at?: string
+  hidden?: boolean
 }
 
 interface TableSummary {
@@ -53,9 +54,13 @@ interface PcoMatch {
 
 // PIN authentication
 const isAuthenticated = ref(false)
+const isAdmin = ref(false)
 const pinInput = ref('')
 const pinError = ref('')
 const isVerifyingPin = ref(false)
+
+// Polling control (admin can disable)
+const pollingEnabled = ref(true)
 
 // Tab state
 const activeTab = ref<'tables' | 'all'>('tables')
@@ -117,6 +122,40 @@ const paymentMode = ref<'idle' | 'processing' | 'waiting' | 'success' | 'error'>
 const currentCheckoutId = ref<string | null>(null)
 const paymentError = ref('')
 
+// Card reader modal state
+interface SquareDevice {
+  id: string
+  code: string
+  deviceId: string | null
+  name: string
+  pairingStatus: string  // PAIRED, UNPAIRED
+  onlineStatus: string   // AVAILABLE, OFFLINE, NEEDS_ATTENTION, UNKNOWN
+  productType: string
+  reservedByOther: boolean
+}
+const showCardReaderModal = ref(false)
+const cardReaderDevices = ref<SquareDevice[]>([])
+const selectedDeviceId = ref<string | null>(localStorage.getItem('fundraiser_device_id'))
+const isLoadingDevices = ref(false)
+const newDeviceCode = ref<string | null>(null)
+const isCreatingCode = ref(false)
+
+// Session ID for device reservation (persisted per tab)
+const sessionId = ref<string>(sessionStorage.getItem('fundraiser_session_id') || crypto.randomUUID())
+if (!sessionStorage.getItem('fundraiser_session_id')) {
+  sessionStorage.setItem('fundraiser_session_id', sessionId.value)
+}
+
+// Real-time online status from ping (more accurate than Devices API)
+// Start as ONLINE to avoid false "offline" on initial load - ping will correct if actually offline
+const deviceOnlineStatus = ref<'ONLINE' | 'OFFLINE' | 'UNKNOWN'>('UNKNOWN')
+
+// Computed: get selected device info
+const selectedDevice = computed(() => {
+  if (!selectedDeviceId.value) return null
+  return cardReaderDevices.value.find(d => d.deviceId === selectedDeviceId.value) || null
+})
+
 // Config
 const config = ref({
   freeAnswerThreshold: 250,
@@ -143,9 +182,31 @@ const sortedTables = computed(() => {
   return [...tables.value].sort((a, b) => a.number - b.number)
 })
 
+// Unmatched donations excluding hidden ones
+const visibleUnmatchedDonations = computed(() => {
+  return unmatchedDonations.value.filter(d => !d.hidden)
+})
+
 // ========================================
 // PIN Verification
 // ========================================
+
+function logout() {
+  // Release device if we have one
+  if (selectedDeviceId.value) {
+    releaseDevice(selectedDeviceId.value)
+    selectedDeviceId.value = null
+    localStorage.removeItem('fundraiser_device_id')
+  }
+  // Clear auth state
+  isAuthenticated.value = false
+  isAdmin.value = false
+  sessionStorage.removeItem('fundraiser_auth')
+  sessionStorage.removeItem('fundraiser_admin')
+  pinInput.value = ''
+  // Reset device status
+  deviceOnlineStatus.value = 'UNKNOWN'
+}
 
 async function verifyPin() {
   if (!pinInput.value) {
@@ -164,8 +225,11 @@ async function verifyPin() {
     })
 
     if (response.ok) {
+      const data = await response.json()
       isAuthenticated.value = true
+      isAdmin.value = data.isAdmin || false
       sessionStorage.setItem('fundraiser_auth', 'true')
+      sessionStorage.setItem('fundraiser_admin', data.isAdmin ? 'true' : 'false')
       await fetchDonations()
     } else {
       pinError.value = 'Invalid PIN'
@@ -403,6 +467,7 @@ async function submitCashPayment() {
 // Card payment - create Square checkout, wait for completion, then create donation
 async function startCardPayment() {
   if (!validateForm()) return
+  if (!selectedDeviceId.value) return  // Button should be disabled, but safety check
 
   paymentMode.value = 'processing'
   paymentError.value = ''
@@ -414,6 +479,7 @@ async function startCardPayment() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         amount: parseFloat(formData.value.amount),
+        deviceId: selectedDeviceId.value,
         donorInfo: {
           firstName: formData.value.firstName,
           lastName: formData.value.lastName,
@@ -518,6 +584,232 @@ async function cancelPayment() {
 }
 
 // ========================================
+// Card Reader Management
+// ========================================
+
+async function fetchDevices(silent = false) {
+  if (!silent) {
+    isLoadingDevices.value = true
+  }
+  try {
+    const response = await fetch(`/api/fundraiser/devices?sessionId=${sessionId.value}`)
+    if (response.ok) {
+      const data = await response.json()
+      cardReaderDevices.value = data.devices || []
+      // Note: reservation check is handled by checkDeviceStatus polling
+    }
+  } catch (error) {
+    console.error('Error fetching devices:', error)
+  } finally {
+    if (!silent) {
+      isLoadingDevices.value = false
+    }
+  }
+}
+
+async function createDeviceCode() {
+  isCreatingCode.value = true
+  newDeviceCode.value = null
+  try {
+    const response = await fetch('/api/fundraiser/device-code', {
+      method: 'POST'
+    })
+    if (response.ok) {
+      const data = await response.json()
+      newDeviceCode.value = data.code
+      // Refresh device list
+      await fetchDevices()
+    }
+  } catch (error) {
+    console.error('Error creating device code:', error)
+  } finally {
+    isCreatingCode.value = false
+  }
+}
+
+async function selectDevice(deviceId: string, forceOverride = false) {
+  // Toggle selection - allow deselecting
+  if (selectedDeviceId.value === deviceId) {
+    // Release the device
+    await releaseDevice(deviceId)
+    selectedDeviceId.value = null
+    localStorage.removeItem('fundraiser_device_id')
+  } else {
+    // Check if device is reserved by another session
+    const device = cardReaderDevices.value.find(d => d.deviceId === deviceId)
+    if (device?.reservedByOther && !forceOverride) {
+      // Only admin can override
+      if (!isAdmin.value) {
+        alert('This device is currently in use by another session. Please select a different reader or ask an admin to reassign it.')
+        return
+      }
+      // Show confirmation dialog for admin
+      const confirmed = confirm(
+        'This device is currently in use by another session.\n\n' +
+        'Taking it will disconnect the other session from this reader.\n\n' +
+        'Do you want to take control of this device?'
+      )
+      if (!confirmed) {
+        return
+      }
+      // Admin confirmed, proceed with force
+      forceOverride = true
+    }
+
+    // Try to reserve the device
+    const reserved = await reserveDevice(deviceId, forceOverride)
+    if (reserved) {
+      // Release previous device if any
+      if (selectedDeviceId.value) {
+        await releaseDevice(selectedDeviceId.value)
+      }
+      selectedDeviceId.value = deviceId
+      localStorage.setItem('fundraiser_device_id', deviceId)
+      // Check device status (combined reservation + ping)
+      await checkDeviceStatus(deviceId)
+    }
+  }
+  // Refresh device list to update reservation status
+  await fetchDevices()
+}
+
+async function reserveDevice(deviceId: string, force = false): Promise<boolean> {
+  try {
+    const response = await fetch('/api/fundraiser/devices/reserve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId, sessionId: sessionId.value, force })
+    })
+    if (!response.ok) {
+      const data = await response.json()
+      if (response.status === 409) {
+        alert('Device reserved by another session. Use the card reader settings to take control if needed.')
+      } else {
+        alert(data.error || 'Failed to reserve device')
+      }
+      return false
+    }
+    return true
+  } catch (error) {
+    console.error('Error reserving device:', error)
+    return false
+  }
+}
+
+async function releaseDevice(deviceId: string) {
+  try {
+    await fetch('/api/fundraiser/devices/release', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId, sessionId: sessionId.value })
+    })
+  } catch (error) {
+    console.error('Error releasing device:', error)
+  }
+}
+
+async function pingDevice(deviceId: string) {
+  // Don't change status while checking - only update on definitive result
+  try {
+    const response = await fetch('/api/fundraiser/devices/ping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId })
+    })
+    if (response.ok) {
+      const data = await response.json()
+      const status = data.online ? 'ONLINE' : 'OFFLINE'
+      deviceOnlineStatus.value = status
+      devicePingStatus.value[deviceId] = status
+    } else {
+      deviceOnlineStatus.value = 'OFFLINE'
+      devicePingStatus.value[deviceId] = 'OFFLINE'
+    }
+  } catch (error) {
+    console.error('Error pinging device:', error)
+    deviceOnlineStatus.value = 'OFFLINE'
+    devicePingStatus.value[deviceId] = 'OFFLINE'
+  }
+}
+
+// Guard to prevent duplicate status checks
+let statusCheckInProgress = false
+
+// Combined status check - handles reservation + online status in one call
+async function checkDeviceStatus(deviceId: string) {
+  // Prevent duplicate calls
+  if (statusCheckInProgress) return
+  statusCheckInProgress = true
+
+  try {
+    const response = await fetch('/api/fundraiser/devices/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId, sessionId: sessionId.value })
+    })
+    if (response.ok) {
+      const data = await response.json()
+      const status = data.online ? 'ONLINE' : 'OFFLINE'
+      deviceOnlineStatus.value = status
+      devicePingStatus.value[deviceId] = status
+
+      // If our device was taken by another session
+      if (data.reservedByOther) {
+        selectedDeviceId.value = null
+        localStorage.removeItem('fundraiser_device_id')
+        alert('Your card reader was taken by another session. Please select a reader again.')
+      }
+    }
+  } catch (error) {
+    console.error('Error checking device status:', error)
+  } finally {
+    statusCheckInProgress = false
+  }
+}
+
+async function openCardReaderModal() {
+  showCardReaderModal.value = true
+  await fetchDevices()
+  // Ping all paired devices to get real-time status
+  for (const device of cardReaderDevices.value) {
+    if (device.deviceId && device.pairingStatus === 'PAIRED') {
+      pingDeviceForList(device.deviceId)
+    }
+  }
+}
+
+// Track ping status per device for the modal list
+const devicePingStatus = ref<Record<string, 'ONLINE' | 'OFFLINE' | 'CHECKING'>>({})
+
+async function pingDeviceForList(deviceId: string) {
+  // Only set CHECKING if we don't have a status yet (first load)
+  if (!devicePingStatus.value[deviceId]) {
+    devicePingStatus.value[deviceId] = 'CHECKING'
+  }
+  try {
+    const response = await fetch('/api/fundraiser/devices/ping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deviceId })
+    })
+    if (response.ok) {
+      const data = await response.json()
+      devicePingStatus.value[deviceId] = data.online ? 'ONLINE' : 'OFFLINE'
+    } else {
+      devicePingStatus.value[deviceId] = 'OFFLINE'
+    }
+  } catch (error) {
+    console.error('Error pinging device:', error)
+    devicePingStatus.value[deviceId] = 'OFFLINE'
+  }
+}
+
+function closeCardReaderModal() {
+  showCardReaderModal.value = false
+  newDeviceCode.value = null
+}
+
+// ========================================
 // Table Actions
 // ========================================
 
@@ -595,6 +887,38 @@ async function assignToTable(donationId: string, tableNumber: number) {
     }
   } catch (error) {
     console.error('Error assigning donation:', error)
+  }
+}
+
+async function hideDonation(donationId: string) {
+  try {
+    const response = await fetch(`/api/fundraiser/donations/${donationId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hidden: true })
+    })
+
+    if (response.ok) {
+      await fetchDonations()
+    }
+  } catch (error) {
+    console.error('Error hiding donation:', error)
+  }
+}
+
+async function unhideDonation(donationId: string) {
+  try {
+    const response = await fetch(`/api/fundraiser/donations/${donationId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hidden: false })
+    })
+
+    if (response.ok) {
+      await fetchDonations()
+    }
+  } catch (error) {
+    console.error('Error unhiding donation:', error)
   }
 }
 
@@ -728,19 +1052,33 @@ function formatDateTime(dateStr: string): string {
 // Lifecycle
 // ========================================
 
-onMounted(() => {
+onMounted(async () => {
   // Check if already authenticated
   if (sessionStorage.getItem('fundraiser_auth') === 'true') {
     isAuthenticated.value = true
+    isAdmin.value = sessionStorage.getItem('fundraiser_admin') === 'true'
     fetchDonations()
+    // Load device list and try to reserve saved device
+    await fetchDevices()
+    // Try to re-reserve the saved device and check status
+    if (selectedDeviceId.value) {
+      await checkDeviceStatus(selectedDeviceId.value)
+    }
   }
 
-  // Setup auto-refresh
+  // Setup auto-refresh for donations
   refreshInterval = setInterval(() => {
     if (isAuthenticated.value) {
       fetchDonations()
     }
   }, config.value.refreshInterval)
+
+  // Setup device polling - single combined call for reservation + online status
+  setInterval(async () => {
+    if (isAuthenticated.value && selectedDeviceId.value && pollingEnabled.value) {
+      await checkDeviceStatus(selectedDeviceId.value)
+    }
+  }, 10000) // Every 10 seconds
 })
 
 onUnmounted(() => {
@@ -752,6 +1090,14 @@ onUnmounted(() => {
   }
   if (pollInterval) {
     clearInterval(pollInterval)
+  }
+  // Release device reservation when leaving
+  if (selectedDeviceId.value) {
+    // Use sendBeacon for reliable delivery on page unload
+    navigator.sendBeacon(
+      '/api/fundraiser/devices/release',
+      JSON.stringify({ deviceId: selectedDeviceId.value, sessionId: sessionId.value })
+    )
   }
 })
 </script>
@@ -804,9 +1150,41 @@ onUnmounted(() => {
               Last updated: {{ lastUpdated ? formatTime(lastUpdated.toISOString()) : 'Loading...' }}
             </p>
           </div>
-          <div class="text-right">
-            <p class="text-3xl font-bold text-green-600">{{ formatCurrency(totalRaised) }}</p>
-            <p class="text-sm text-gray-500">{{ totalDonations }} donations</p>
+          <div class="flex items-center gap-4">
+            <!-- Logout Button -->
+            <button
+              @click="logout"
+              class="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+              title="Logout"
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path>
+              </svg>
+            </button>
+            <!-- Card Reader Settings Button -->
+            <button
+              @click="openCardReaderModal"
+              :class="[
+                'p-2 rounded-lg transition-colors flex items-center gap-2',
+                !selectedDeviceId
+                  ? 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'
+                  : deviceOnlineStatus === 'OFFLINE'
+                    ? 'bg-red-100 text-red-700 hover:bg-red-200'
+                    : 'bg-green-100 text-green-700 hover:bg-green-200'
+              ]"
+              :title="!selectedDeviceId ? 'Configure card reader' : deviceOnlineStatus === 'OFFLINE' ? 'Card reader offline' : 'Card reader online'"
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
+              </svg>
+              <span class="text-sm font-medium hidden sm:inline">
+                {{ !selectedDeviceId ? 'Setup Reader' : deviceOnlineStatus === 'OFFLINE' ? 'Reader Offline' : 'Reader OK' }}
+              </span>
+            </button>
+            <div class="text-right">
+              <p class="text-3xl font-bold text-green-600">{{ formatCurrency(totalRaised) }}</p>
+              <p class="text-sm text-gray-500">{{ totalDonations }} donations</p>
+            </div>
           </div>
         </div>
       </div>
@@ -1003,7 +1381,8 @@ onUnmounted(() => {
                   type="button"
                   @click="startCardPayment"
                   class="flex-1 py-3 bg-green-600 hover:bg-green-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                  :disabled="isSubmitting || paymentMode !== 'idle'"
+                  :disabled="isSubmitting || paymentMode !== 'idle' || !selectedDeviceId || deviceOnlineStatus === 'OFFLINE'"
+                  :title="!selectedDeviceId ? 'Configure card reader first' : deviceOnlineStatus === 'OFFLINE' ? 'Card reader is offline' : ''"
                 >
                   <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
@@ -1028,17 +1407,17 @@ onUnmounted(() => {
         </div>
 
         <!-- Unmatched Donations Section -->
-        <div v-if="unmatchedDonations.length > 0" class="bg-yellow-50 border border-yellow-200 rounded-xl p-6">
+        <div v-if="visibleUnmatchedDonations.length > 0" class="bg-yellow-50 border border-yellow-200 rounded-xl p-6">
           <h2 class="text-lg font-semibold text-yellow-800 mb-4 flex items-center gap-2">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
             </svg>
-            New Donations - Assign Table ({{ unmatchedDonations.length }})
+            New Donations - Assign Table ({{ visibleUnmatchedDonations.length }})
           </h2>
 
           <div class="space-y-3">
             <div
-              v-for="donation in unmatchedDonations"
+              v-for="donation in visibleUnmatchedDonations"
               :key="donation.id"
               class="flex items-center justify-between bg-white rounded-lg p-4 border border-yellow-200"
             >
@@ -1047,15 +1426,26 @@ onUnmounted(() => {
                 <p class="text-sm text-gray-500">{{ formatCurrency(donation.amount) }} - {{ formatTime(donation.created_at) }}</p>
                 <p v-if="donation.notes" class="text-xs text-gray-400 mt-1">Notes: {{ donation.notes }}</p>
               </div>
-              <div class="flex items-center gap-2">
-                <label class="text-sm text-gray-600">Table:</label>
-                <select
-                  @change="(e) => assignToTable(donation.id, parseInt((e.target as HTMLSelectElement).value))"
-                  class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+              <div class="flex items-center gap-3">
+                <div class="flex items-center gap-2">
+                  <label class="text-sm text-gray-600">Table:</label>
+                  <select
+                    @change="(e) => assignToTable(donation.id, parseInt((e.target as HTMLSelectElement).value))"
+                    class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">Select...</option>
+                    <option v-for="n in 100" :key="n" :value="n">{{ n }}</option>
+                  </select>
+                </div>
+                <button
+                  @click="hideDonation(donation.id)"
+                  class="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                  title="Hide - not a trivia donation"
                 >
-                  <option value="">Select...</option>
-                  <option v-for="n in 100" :key="n" :value="n">{{ n }}</option>
-                </select>
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"></path>
+                  </svg>
+                </button>
               </div>
             </div>
           </div>
@@ -1162,7 +1552,7 @@ onUnmounted(() => {
                 v-for="donation in donations"
                 :key="donation.id"
                 :class="[
-                  donation.deleted_at ? 'bg-red-50 opacity-60' : 'hover:bg-gray-50'
+                  donation.deleted_at ? 'bg-red-50 opacity-60' : donation.hidden ? 'bg-yellow-50 opacity-75' : 'hover:bg-gray-50'
                 ]"
               >
                 <td class="px-6 py-4 whitespace-nowrap">
@@ -1181,27 +1571,44 @@ onUnmounted(() => {
                   {{ formatCurrency(donation.amount) }}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
-                  <span
-                    v-if="donation.deleted_at"
-                    class="px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800"
-                  >
-                    DELETED
-                  </span>
-                  <span
-                    v-else
-                    :class="[
-                      'px-2 py-1 rounded-full text-xs font-medium',
-                      donation.source === 'mm' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'
-                    ]"
-                  >
-                    {{ donation.source === 'mm' ? 'QR Code' : 'Direct' }}
-                  </span>
+                  <div class="flex items-center gap-1">
+                    <span
+                      v-if="donation.deleted_at"
+                      class="px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800"
+                    >
+                      DELETED
+                    </span>
+                    <template v-else>
+                      <span
+                        v-if="donation.hidden"
+                        class="px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800"
+                      >
+                        HIDDEN
+                      </span>
+                      <span
+                        :class="[
+                          'px-2 py-1 rounded-full text-xs font-medium',
+                          donation.source === 'mm' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'
+                        ]"
+                      >
+                        {{ donation.source === 'mm' ? 'QR Code' : 'Direct' }}
+                      </span>
+                    </template>
+                  </div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   {{ formatDateTime(donation.created_at) }}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <div v-if="!donation.deleted_at" class="flex items-center gap-1">
+                    <button
+                      v-if="donation.hidden"
+                      @click="unhideDonation(donation.id)"
+                      class="px-2 py-1 text-xs bg-yellow-100 text-yellow-700 hover:bg-yellow-200 rounded transition-colors"
+                      title="Unhide donation"
+                    >
+                      Unhide
+                    </button>
                     <button
                       @click="openEditModal(donation)"
                       class="p-2 text-gray-400 hover:text-blue-600 transition-colors"
@@ -1505,6 +1912,182 @@ onUnmounted(() => {
           <button
             @click="paymentMode = 'idle'; paymentError = ''"
             class="px-6 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium rounded-lg transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card Reader Settings Modal -->
+    <div v-if="showCardReaderModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div class="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] flex flex-col">
+        <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between shrink-0">
+          <div>
+            <h3 class="text-xl font-bold text-gray-900">Card Reader Settings</h3>
+            <p class="text-sm text-gray-500">Configure your Square Terminal</p>
+          </div>
+          <button @click="closeCardReaderModal" class="text-gray-400 hover:text-gray-600">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+          </button>
+        </div>
+
+        <div class="p-6 overflow-y-auto flex-1 space-y-6">
+          <!-- New Device Code Section -->
+          <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <h4 class="font-medium text-blue-900 mb-2">Pair New Device</h4>
+            <p class="text-sm text-blue-700 mb-3">Generate a code to pair a new Square Terminal</p>
+
+            <div v-if="newDeviceCode" class="mb-3">
+              <div class="bg-white border-2 border-blue-300 rounded-lg p-4 text-center">
+                <p class="text-sm text-gray-500 mb-1">Enter this code on your terminal:</p>
+                <p class="text-4xl font-mono font-bold text-blue-600 tracking-wider">{{ newDeviceCode }}</p>
+              </div>
+            </div>
+
+            <button
+              @click="createDeviceCode"
+              :disabled="isCreatingCode"
+              class="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              <svg v-if="isCreatingCode" class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+              </svg>
+              {{ isCreatingCode ? 'Generating...' : (newDeviceCode ? 'Generate New Code' : 'Generate Pairing Code') }}
+            </button>
+          </div>
+
+          <!-- Device List -->
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <h4 class="font-medium text-gray-900">Available Devices</h4>
+              <button
+                @click="fetchDevices()"
+                :disabled="isLoadingDevices"
+                class="text-sm text-blue-600 hover:text-blue-700 flex items-center gap-1"
+              >
+                <svg :class="['w-4 h-4', isLoadingDevices && 'animate-spin']" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                </svg>
+                Refresh
+              </button>
+            </div>
+
+            <div v-if="isLoadingDevices" class="text-center py-8">
+              <svg class="animate-spin h-8 w-8 mx-auto text-gray-400" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+              </svg>
+              <p class="text-gray-500 mt-2">Loading devices...</p>
+            </div>
+
+            <div v-else-if="cardReaderDevices.length === 0" class="text-center py-8 bg-gray-50 rounded-lg">
+              <svg class="w-12 h-12 mx-auto text-gray-300 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
+              </svg>
+              <p class="text-gray-500">No devices found</p>
+              <p class="text-sm text-gray-400">Generate a pairing code above</p>
+            </div>
+
+            <div v-else class="space-y-2">
+              <button
+                v-for="device in cardReaderDevices"
+                :key="device.id"
+                @click="device.deviceId && device.pairingStatus === 'PAIRED' && selectDevice(device.deviceId)"
+                :disabled="!device.deviceId || device.pairingStatus !== 'PAIRED'"
+                :class="[
+                  'w-full p-4 rounded-lg border-2 text-left transition-colors',
+                  device.deviceId === selectedDeviceId
+                    ? 'border-green-500 bg-green-50'
+                    : device.reservedByOther
+                      ? 'border-orange-300 bg-orange-50 hover:border-orange-400 hover:bg-orange-100'
+                      : device.pairingStatus === 'PAIRED'
+                        ? 'border-gray-200 hover:border-blue-300 hover:bg-blue-50'
+                        : 'border-gray-200 bg-gray-50 cursor-not-allowed opacity-60'
+                ]"
+              >
+                <div class="flex items-center justify-between">
+                  <div>
+                    <p class="font-medium text-gray-900">{{ device.name || 'Square Terminal' }}</p>
+                    <p class="text-sm text-gray-500">
+                      Code: {{ device.code }}
+                      <span v-if="device.deviceId" class="ml-2">ID: ...{{ device.deviceId.slice(-8) }}</span>
+                    </p>
+                    <p v-if="device.reservedByOther" class="text-xs text-orange-600 mt-1">In use by another session</p>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <!-- Online/Offline Status (from ping) -->
+                    <span
+                      v-if="device.pairingStatus === 'PAIRED' && device.deviceId"
+                      :class="[
+                        'px-2 py-1 rounded-full text-xs font-medium flex items-center gap-1',
+                        devicePingStatus[device.deviceId] === 'ONLINE' ? 'bg-green-100 text-green-700' :
+                        devicePingStatus[device.deviceId] === 'OFFLINE' ? 'bg-red-100 text-red-700' :
+                        devicePingStatus[device.deviceId] === 'CHECKING' ? 'bg-blue-100 text-blue-700' :
+                        'bg-gray-100 text-gray-600'
+                      ]"
+                    >
+                      <svg v-if="devicePingStatus[device.deviceId] === 'CHECKING'" class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                      </svg>
+                      {{ devicePingStatus[device.deviceId] === 'CHECKING' ? 'CHECKING' : devicePingStatus[device.deviceId] || 'UNKNOWN' }}
+                    </span>
+                    <!-- Pairing Status (for unpaired) -->
+                    <span
+                      v-else
+                      :class="[
+                        'px-2 py-1 rounded-full text-xs font-medium',
+                        device.pairingStatus === 'UNPAIRED' ? 'bg-yellow-100 text-yellow-700' :
+                        'bg-gray-100 text-gray-600'
+                      ]"
+                    >
+                      {{ device.pairingStatus }}
+                    </span>
+                    <!-- Selected Checkmark -->
+                    <svg
+                      v-if="device.deviceId === selectedDeviceId"
+                      class="w-5 h-5 text-green-600"
+                      fill="currentColor"
+                      viewBox="0 0 20 20"
+                    >
+                      <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path>
+                    </svg>
+                  </div>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="px-6 py-4 border-t border-gray-200 shrink-0 space-y-3">
+          <!-- Admin: Polling Toggle -->
+          <div v-if="isAdmin" class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+            <div>
+              <p class="text-sm font-medium text-gray-700">Device Polling</p>
+              <p class="text-xs text-gray-500">Auto-check reader status every 10s</p>
+            </div>
+            <button
+              @click="pollingEnabled = !pollingEnabled"
+              :class="[
+                'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                pollingEnabled ? 'bg-green-600' : 'bg-gray-300'
+              ]"
+            >
+              <span
+                :class="[
+                  'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
+                  pollingEnabled ? 'translate-x-6' : 'translate-x-1'
+                ]"
+              />
+            </button>
+          </div>
+          <button
+            @click="closeCardReaderModal"
+            class="w-full py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-lg transition-colors"
           >
             Close
           </button>

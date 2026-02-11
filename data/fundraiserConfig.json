@@ -1,5 +1,6 @@
 {
   "pin": "1234",
+  "adminPin": "7682",
   "tripId": "94304",
   "eventDate": "2026-02-11",
   "freeAnswerThreshold": 250,

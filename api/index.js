@@ -3899,8 +3899,10 @@ app.post('/api/fundraiser/verify-pin', (req, res) => {
     const { pin } = req.body
     const config = getFundraiserConfig()
 
-    if (pin === config.pin) {
-      res.json({ valid: true })
+    if (pin === config.adminPin) {
+      res.json({ valid: true, isAdmin: true })
+    } else if (pin === config.pin) {
+      res.json({ valid: true, isAdmin: false })
     } else {
       res.status(401).json({ valid: false, error: 'Invalid PIN' })
     }
@@ -4178,7 +4180,7 @@ app.post('/api/fundraiser/donations', async (req, res) => {
 app.patch('/api/fundraiser/donations/:id', async (req, res) => {
   try {
     const { id } = req.params
-    const { firstName, lastName, phone, email, street, city, state, zip, tableNumber, table_number, amount, notes } = req.body
+    const { firstName, lastName, phone, email, street, city, state, zip, tableNumber, table_number, amount, notes, hidden } = req.body
 
     const updates = {}
     if (firstName !== undefined) updates.first_name = firstName
@@ -4191,21 +4193,48 @@ app.patch('/api/fundraiser/donations/:id', async (req, res) => {
     if (zip !== undefined) updates.zip = zip || null
     // Accept both tableNumber and table_number
     const tblNum = tableNumber !== undefined ? tableNumber : table_number
-    if (tblNum !== undefined) updates.table_number = tblNum ? parseInt(tblNum, 10) : null
+    if (tblNum !== undefined) {
+      updates.table_number = tblNum ? parseInt(tblNum, 10) : null
+      // When assigning a table, automatically unhide the donation
+      if (tblNum) updates.hidden = false
+    }
     if (amount !== undefined) updates.amount = parseFloat(amount)
     if (notes !== undefined) updates.notes = notes || null
+    if (hidden !== undefined) updates.hidden = hidden
 
     const donation = await updateDonation(id, updates)
 
     // Also update in MM if we have mm_id
     const mmApiKey = process.env.MM_API_KEY
-    if (mmApiKey && donation.mm_id) {
+    const config = getFundraiserConfig()
+    if (mmApiKey && donation.mm_id && donation.table_number) {
       try {
         // Build notes: "Donor Name - TRIVIA TABLE XX"
         const donorName = [donation.first_name, donation.last_name].filter(Boolean).join(' ') || 'Anonymous'
         let mmNotes = `${donorName} - TRIVIA TABLE ${donation.table_number || '?'}`
         if (donation.notes) {
           mmNotes = `${mmNotes} - ${donation.notes}`
+        }
+
+        // Use original created_at date for deposit date
+        const depositDate = donation.mm_created_at
+          ? new Date(donation.mm_created_at).toISOString().split('T')[0]
+          : new Date().toISOString().split('T')[0]
+
+        const mmPayload = {
+          GetById: parseInt(donation.mm_id, 10),
+          MissionTripId: parseInt(config.tripId, 10),
+          DonorName: donorName,
+          PhoneNumber: donation.phone || '',
+          EmailAddress: donation.email || '',
+          Address1: donation.street || '',
+          City: donation.city || '',
+          State: donation.state || '',
+          PostalCode: donation.zip || '',
+          ContributionAmount: parseFloat(donation.amount),
+          Notes: mmNotes,
+          ReferenceNumber: 'TRIVIA',
+          DepositDate: depositDate
         }
 
         const mmResponse = await fetch(
@@ -4216,24 +4245,13 @@ app.patch('/api/fundraiser/donations/:id', async (req, res) => {
               'Authorization': `Bearer ${mmApiKey}`,
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-              GetById: parseInt(donation.mm_id, 10),
-              DonorName: donorName,
-              PhoneNumber: donation.phone || '',
-              EmailAddress: donation.email || '',
-              Address1: donation.street || '',
-              City: donation.city || '',
-              State: donation.state || '',
-              PostalCode: donation.zip || '',
-              ContributionAmount: parseFloat(donation.amount),
-              Notes: mmNotes,
-              ReferenceNumber: 'TRIVIA'
-            })
+            body: JSON.stringify(mmPayload)
           }
         )
 
         if (!mmResponse.ok) {
-          console.error('[Fundraiser] MM update error:', mmResponse.status, await mmResponse.text())
+          const mmText = await mmResponse.text()
+          console.error('[Fundraiser] MM update error:', mmResponse.status, mmText)
         }
       } catch (mmErr) {
         console.error('[Fundraiser] MM update error:', mmErr)
@@ -4470,18 +4488,18 @@ function getSquareBaseUrl() {
 // Create a Terminal Checkout
 app.post('/api/fundraiser/checkout', async (req, res) => {
   try {
-    const { amount, donorInfo } = req.body
+    const { amount, donorInfo, deviceId: requestDeviceId } = req.body
 
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: 'Valid amount is required' })
     }
 
     const squareToken = process.env.SQUARE_ACCESS_TOKEN
-    const deviceId = process.env.SQUARE_DEVICE_ID
+    const deviceId = requestDeviceId || process.env.SQUARE_DEVICE_ID  // Allow override from request
     const locationId = process.env.SQUARE_LOCATION_ID
 
     if (!squareToken || !deviceId || !locationId) {
-      return res.status(500).json({ error: 'Square not configured' })
+      return res.status(500).json({ error: 'Square not configured - missing device' })
     }
 
     const squareBaseUrl = getSquareBaseUrl()
@@ -4624,9 +4642,25 @@ app.post('/api/fundraiser/checkout/:checkoutId/cancel', async (req, res) => {
 })
 
 // List paired Square Terminal devices
+// In-memory device reservations (device_id -> { sessionId, reservedAt })
+// In production, this should be stored in Redis/Supabase for multi-instance support
+const deviceReservations = new Map()
+const RESERVATION_TIMEOUT = 5 * 60 * 1000 // 5 minutes - reservation expires if not refreshed
+
+// Clean up expired reservations
+function cleanExpiredReservations() {
+  const now = Date.now()
+  for (const [deviceId, reservation] of deviceReservations.entries()) {
+    if (now - reservation.reservedAt > RESERVATION_TIMEOUT) {
+      deviceReservations.delete(deviceId)
+    }
+  }
+}
+
 app.get('/api/fundraiser/devices', async (req, res) => {
   try {
     const squareToken = process.env.SQUARE_ACCESS_TOKEN
+    const sessionId = req.query.sessionId // Client passes their session ID
 
     if (!squareToken) {
       return res.status(500).json({ error: 'Square not configured' })
@@ -4634,8 +4668,11 @@ app.get('/api/fundraiser/devices', async (req, res) => {
 
     const squareBaseUrl = getSquareBaseUrl()
 
-    // Search for device codes (paired devices)
-    const squareResponse = await fetch(
+    // Clean up expired reservations
+    cleanExpiredReservations()
+
+    // Fetch device codes (for pairing info)
+    const codesResponse = await fetch(
       `${squareBaseUrl}/v2/devices/codes`,
       {
         method: 'GET',
@@ -4647,28 +4684,297 @@ app.get('/api/fundraiser/devices', async (req, res) => {
       }
     )
 
-    const squareData = await squareResponse.json()
-
-    if (!squareResponse.ok) {
-      console.error('[Fundraiser] Square list devices error:', squareData)
-      return res.status(500).json({ error: 'Failed to list devices', details: squareData })
+    const codesData = await codesResponse.json()
+    if (!codesResponse.ok) {
+      console.error('[Fundraiser] Square list device codes error:', codesData)
+      return res.status(500).json({ error: 'Failed to list device codes', details: codesData })
     }
 
-    // Filter for paired devices and return relevant info
-    const devices = (squareData.device_codes || []).map(dc => ({
-      id: dc.id,
-      code: dc.code,
-      deviceId: dc.device_id,
-      name: dc.name,
-      status: dc.status,
-      productType: dc.product_type,
-      locationId: dc.location_id
-    }))
+    // Fetch actual devices with status (Devices API)
+    const devicesResponse = await fetch(
+      `${squareBaseUrl}/v2/devices`,
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${squareToken}`,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-01-18'
+        }
+      }
+    )
+
+    const devicesData = await devicesResponse.json()
+    let deviceStatusMap = {}
+
+    if (devicesResponse.ok && devicesData.devices) {
+      console.log('[Fundraiser] Devices API returned', devicesData.devices.length, 'devices')
+      // Build map of device_id -> status
+      // Note: Devices API returns id as "device:XXXX" but device_code has just "XXXX"
+      for (const device of devicesData.devices) {
+        // Strip "device:" prefix if present for matching
+        const deviceId = device.id.replace(/^device:/, '')
+        console.log('[Fundraiser] Device:', deviceId, 'status:', device.status?.category)
+        deviceStatusMap[deviceId] = {
+          status: device.status?.category || 'UNKNOWN',
+          name: device.name
+        }
+      }
+    } else if (!devicesResponse.ok) {
+      console.error('[Fundraiser] Devices API error:', devicesResponse.status, devicesData)
+    } else {
+      console.log('[Fundraiser] Devices API returned no devices')
+    }
+
+    // Combine device codes with status info
+    const devices = (codesData.device_codes || []).map(dc => {
+      const deviceStatus = dc.device_id ? deviceStatusMap[dc.device_id] : null
+      const reservation = dc.device_id ? deviceReservations.get(dc.device_id) : null
+      const isReservedByOther = reservation && reservation.sessionId !== sessionId
+
+      return {
+        id: dc.id,
+        code: dc.code,
+        deviceId: dc.device_id,
+        name: deviceStatus?.name || dc.name,
+        pairingStatus: dc.status, // PAIRED, UNPAIRED, etc.
+        onlineStatus: deviceStatus?.status || 'UNKNOWN', // AVAILABLE, OFFLINE, NEEDS_ATTENTION
+        productType: dc.product_type,
+        locationId: dc.location_id,
+        reservedByOther: isReservedByOther
+      }
+    })
 
     res.json({ devices })
   } catch (err) {
     console.error('[Fundraiser] Square list devices error:', err)
     res.status(500).json({ error: 'Failed to list devices' })
+  }
+})
+
+// Combined device status check - reserves device and pings for online status
+app.post('/api/fundraiser/devices/status', async (req, res) => {
+  try {
+    const { deviceId, sessionId } = req.body
+    const squareToken = process.env.SQUARE_ACCESS_TOKEN
+
+    if (!squareToken || !deviceId || !sessionId) {
+      return res.status(400).json({ error: 'deviceId and sessionId required' })
+    }
+
+    // Clean up expired reservations
+    cleanExpiredReservations()
+
+    // Check/update reservation
+    const existingReservation = deviceReservations.get(deviceId)
+    const reservedByOther = existingReservation && existingReservation.sessionId !== sessionId
+
+    // If we own it or it's free, refresh our reservation
+    if (!reservedByOther) {
+      deviceReservations.set(deviceId, {
+        sessionId,
+        reservedAt: Date.now()
+      })
+    }
+
+    // Ping the device for online status
+    const squareBaseUrl = getSquareBaseUrl()
+    const idempotencyKey = `ping-${deviceId}-${Date.now()}`
+
+    const pingResponse = await fetch(
+      `${squareBaseUrl}/v2/terminals/actions`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${squareToken}`,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-01-18'
+        },
+        body: JSON.stringify({
+          idempotency_key: idempotencyKey,
+          action: {
+            device_id: deviceId,
+            type: 'PING',
+            deadline_duration: 'PT1M'
+          }
+        })
+      }
+    )
+
+    const pingData = await pingResponse.json()
+    let online = false
+    let status = 'UNKNOWN'
+
+    if (pingResponse.ok) {
+      const actionId = pingData.action?.id
+      status = pingData.action?.status
+
+      // Poll for status update if PENDING
+      if (status === 'PENDING' && actionId) {
+        for (let i = 0; i < 3; i++) {
+          await new Promise(resolve => setTimeout(resolve, 1000))
+          const checkResponse = await fetch(
+            `${squareBaseUrl}/v2/terminals/actions/${actionId}`,
+            {
+              headers: {
+                'Authorization': `Bearer ${squareToken}`,
+                'Content-Type': 'application/json',
+                'Square-Version': '2024-01-18'
+              }
+            }
+          )
+          if (checkResponse.ok) {
+            const checkData = await checkResponse.json()
+            status = checkData.action?.status
+            if (status !== 'PENDING') break
+          }
+        }
+      }
+
+      online = status === 'IN_PROGRESS' || status === 'COMPLETED'
+    }
+
+    console.log(`[Fundraiser] Device status ${deviceId}: online=${online}, reservedByOther=${reservedByOther}`)
+    res.json({ online, status, reservedByOther })
+  } catch (err) {
+    console.error('[Fundraiser] Device status error:', err)
+    res.status(500).json({ error: 'Failed to check device status' })
+  }
+})
+
+// Ping a device to check real-time online status (legacy, used by modal)
+app.post('/api/fundraiser/devices/ping', async (req, res) => {
+  try {
+    const { deviceId } = req.body
+    const squareToken = process.env.SQUARE_ACCESS_TOKEN
+
+    if (!squareToken || !deviceId) {
+      return res.status(400).json({ error: 'deviceId required' })
+    }
+
+    const squareBaseUrl = getSquareBaseUrl()
+    const idempotencyKey = `ping-${deviceId}-${Date.now()}`
+
+    // Create a PING terminal action
+    const pingResponse = await fetch(
+      `${squareBaseUrl}/v2/terminals/actions`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${squareToken}`,
+          'Content-Type': 'application/json',
+          'Square-Version': '2024-01-18'
+        },
+        body: JSON.stringify({
+          idempotency_key: idempotencyKey,
+          action: {
+            device_id: deviceId,
+            type: 'PING',
+            deadline_duration: 'PT1M' // 1 minute timeout
+          }
+        })
+      }
+    )
+
+    const pingData = await pingResponse.json()
+
+    if (!pingResponse.ok) {
+      console.error('[Fundraiser] Ping error:', pingData)
+      return res.json({ online: false, error: pingData.errors?.[0]?.detail })
+    }
+
+    const actionId = pingData.action?.id
+    let status = pingData.action?.status
+
+    // Poll for status update if PENDING (device might respond quickly)
+    if (status === 'PENDING' && actionId) {
+      // Wait up to 3 seconds for device to respond
+      for (let i = 0; i < 3; i++) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+
+        const checkResponse = await fetch(
+          `${squareBaseUrl}/v2/terminals/actions/${actionId}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${squareToken}`,
+              'Content-Type': 'application/json',
+              'Square-Version': '2024-01-18'
+            }
+          }
+        )
+
+        if (checkResponse.ok) {
+          const checkData = await checkResponse.json()
+          status = checkData.action?.status
+          if (status !== 'PENDING') {
+            break
+          }
+        }
+      }
+    }
+
+    // PENDING after polling = device didn't respond = offline
+    // IN_PROGRESS or COMPLETED = device responded = online
+    const online = status === 'IN_PROGRESS' || status === 'COMPLETED'
+
+    console.log(`[Fundraiser] Ping device ${deviceId}: status=${status}, online=${online}`)
+    res.json({ online, status, actionId })
+  } catch (err) {
+    console.error('[Fundraiser] Ping device error:', err)
+    res.json({ online: false, error: 'Failed to ping device' })
+  }
+})
+
+// Reserve a device for this session
+app.post('/api/fundraiser/devices/reserve', async (req, res) => {
+  try {
+    const { deviceId, sessionId, force } = req.body
+
+    if (!deviceId || !sessionId) {
+      return res.status(400).json({ error: 'deviceId and sessionId required' })
+    }
+
+    // Clean up expired reservations
+    cleanExpiredReservations()
+
+    // Check if already reserved by another session
+    const existing = deviceReservations.get(deviceId)
+    if (existing && existing.sessionId !== sessionId && !force) {
+      return res.status(409).json({ error: 'Device already reserved by another session' })
+    }
+
+    // Reserve the device (force overrides existing reservation)
+    deviceReservations.set(deviceId, {
+      sessionId,
+      reservedAt: Date.now()
+    })
+
+    console.log(`[Fundraiser] Device ${deviceId} reserved by session ${sessionId}${force ? ' (forced)' : ''}`)
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[Fundraiser] Reserve device error:', err)
+    res.status(500).json({ error: 'Failed to reserve device' })
+  }
+})
+
+// Release a device reservation
+app.post('/api/fundraiser/devices/release', async (req, res) => {
+  try {
+    const { deviceId, sessionId } = req.body
+
+    if (!deviceId || !sessionId) {
+      return res.status(400).json({ error: 'deviceId and sessionId required' })
+    }
+
+    const existing = deviceReservations.get(deviceId)
+    if (existing && existing.sessionId === sessionId) {
+      deviceReservations.delete(deviceId)
+      console.log(`[Fundraiser] Device ${deviceId} released by session ${sessionId}`)
+    }
+
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[Fundraiser] Release device error:', err)
+    res.status(500).json({ error: 'Failed to release device' })
   }
 })
 
