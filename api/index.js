@@ -3990,6 +3990,7 @@ app.get('/api/fundraiser/donations', async (req, res) => {
             }
 
             const finalSource = existing?.source || 'mm'  // Preserve original source (local vs mm)
+            const finalPaymentType = existing?.payment_type || 'mm'  // Preserve existing or default to 'mm'
             const finalTableNumber = (existing && existing.table_number !== null)
               ? existing.table_number  // Preserve manually-set table number
               : tableNumber            // Use parsed value from MM Notes
@@ -4012,7 +4013,8 @@ app.get('/api/fundraiser/donations', async (req, res) => {
               zip: contrib.PostalCode || null,
               table_number: finalTableNumber,
               amount: parseFloat(contrib.ContributionAmount) || 0,
-              notes: mmNotes
+              notes: mmNotes,
+              payment_type: finalPaymentType
             })
 
             // If table was auto-assigned and Reference isn't already TRIVIA, update MM (fire and forget)
@@ -4119,6 +4121,7 @@ app.post('/api/fundraiser/donations', async (req, res) => {
     const tableNumber = req.body.tableNumber || req.body.table_number
     const amount = req.body.amount
     const notes = req.body.notes
+    const paymentType = req.body.payment_type || req.body.paymentType
 
     if (!firstName || !lastName || amount === undefined) {
       return res.status(400).json({ error: 'First name, last name, and amount are required' })
@@ -4137,7 +4140,8 @@ app.post('/api/fundraiser/donations', async (req, res) => {
       zip: zip || null,
       table_number: tableNumber ? parseInt(tableNumber, 10) : null,
       amount: parseFloat(amount),
-      notes: notes || null
+      notes: notes || null,
+      payment_type: paymentType || null
     })
 
     // Also create in Managed Missions

@@ -21,6 +21,7 @@ interface Donation {
   amount: number
   notes?: string
   reference_number?: string
+  payment_type?: 'credit' | 'mm' | 'cash' | null
   created_at: string
   deleted_at?: string
   hidden?: boolean
@@ -443,7 +444,7 @@ function clearFormAndRefresh() {
   fetchDonations()
 }
 
-async function createDonation(): Promise<boolean> {
+async function createDonation(paymentType: 'credit' | 'cash'): Promise<boolean> {
   try {
     const response = await fetch('/api/fundraiser/donations', {
       method: 'POST',
@@ -458,7 +459,8 @@ async function createDonation(): Promise<boolean> {
         state: formData.value.state || null,
         zip: formData.value.zip || null,
         table_number: parseInt(formData.value.tableNumber),
-        amount: parseFloat(formData.value.amount)
+        amount: parseFloat(formData.value.amount),
+        payment_type: paymentType
       })
     })
 
@@ -481,7 +483,7 @@ async function submitCashPayment() {
   isSubmitting.value = true
 
   try {
-    const success = await createDonation()
+    const success = await createDonation('cash')
     if (success) {
       submitSuccess.value = true
       clearFormAndRefresh()
@@ -565,7 +567,7 @@ async function pollPaymentStatus() {
         pollInterval = null
 
         paymentMode.value = 'processing'
-        const success = await createDonation()
+        const success = await createDonation('credit')
 
         if (success) {
           paymentMode.value = 'success'
@@ -1076,6 +1078,70 @@ function formatDateTime(dateStr: string): string {
   })
 }
 
+function exportDonationsCsv() {
+  // Build CSV content
+  const headers = ['Name', 'Table', 'Amount', 'Type', 'Email', 'Phone', 'Time', 'Status']
+  const rows = donations.value.map(d => {
+    // Determine type
+    let type = ''
+    if (d.payment_type === 'mm' || (!d.payment_type && d.source === 'mm')) {
+      type = 'QR'
+    } else if (d.payment_type === 'credit') {
+      type = 'Credit'
+    } else if (d.payment_type === 'cash') {
+      type = 'Cash'
+    } else {
+      type = ''
+    }
+
+    // Determine status
+    let status = ''
+    if (d.deleted_at) {
+      status = 'Deleted'
+    } else if (d.hidden) {
+      status = 'Hidden'
+    } else if (!d.table_number) {
+      status = 'Unassigned'
+    } else {
+      status = 'Active'
+    }
+
+    return [
+      `${d.first_name} ${d.last_name}`,
+      d.table_number || '',
+      d.amount.toFixed(2),
+      type,
+      d.email || '',
+      d.phone || '',
+      new Date(d.created_at).toLocaleString(),
+      status
+    ]
+  })
+
+  // Escape CSV values
+  const escapeCsv = (val: string | number) => {
+    const str = String(val)
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`
+    }
+    return str
+  }
+
+  const csvContent = [
+    headers.join(','),
+    ...rows.map(row => row.map(escapeCsv).join(','))
+  ].join('\n')
+
+  // Download
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `donations-${new Date().toISOString().split('T')[0]}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 // ========================================
 // Lifecycle
 // ========================================
@@ -1563,6 +1629,18 @@ onUnmounted(() => {
 
       <!-- All Donations Tab -->
       <div v-if="activeTab === 'all'" class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <!-- Export button for admin -->
+        <div v-if="isAdmin" class="px-6 py-3 bg-gray-50 border-b border-gray-200 flex justify-end">
+          <button
+            @click="exportDonationsCsv"
+            class="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 transition-colors"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+            </svg>
+            Export CSV
+          </button>
+        </div>
         <div class="overflow-x-auto">
           <table class="w-full">
             <thead class="bg-gray-50 border-b border-gray-200">
@@ -1570,7 +1648,7 @@ onUnmounted(() => {
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Table</th>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
               </tr>
@@ -1613,13 +1691,30 @@ onUnmounted(() => {
                       >
                         HIDDEN
                       </span>
+                      <!-- Payment type chip -->
                       <span
-                        :class="[
-                          'px-2 py-1 rounded-full text-xs font-medium',
-                          donation.source === 'mm' ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'
-                        ]"
+                        v-if="donation.payment_type === 'mm' || (!donation.payment_type && donation.source === 'mm')"
+                        class="px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800"
                       >
-                        {{ donation.source === 'mm' ? 'QR Code' : 'Direct' }}
+                        QR
+                      </span>
+                      <span
+                        v-else-if="donation.payment_type === 'credit'"
+                        class="px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
+                      >
+                        Credit
+                      </span>
+                      <span
+                        v-else-if="donation.payment_type === 'cash'"
+                        class="px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800"
+                      >
+                        Cash
+                      </span>
+                      <span
+                        v-else
+                        class="px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600"
+                      >
+                        —
                       </span>
                     </template>
                   </div>
