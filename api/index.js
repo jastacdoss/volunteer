@@ -3912,17 +3912,25 @@ app.post('/api/fundraiser/verify-pin', (req, res) => {
   }
 })
 
-// Get all donations (syncs from MM first)
+// MM sync cache to avoid syncing on every request
+let lastMmSync = 0
+const MM_SYNC_INTERVAL = 30000 // 30 seconds
+
+// Get all donations (syncs from MM periodically)
 app.get('/api/fundraiser/donations', async (req, res) => {
   try {
     const config = getFundraiserConfig()
     const mmApiKey = process.env.MM_API_KEY
+    const now = Date.now()
+    const shouldSync = now - lastMmSync > MM_SYNC_INTERVAL
 
-    // Fetch donations from Managed Missions
-    if (mmApiKey) {
+    // Fetch donations from Managed Missions (only if cache expired)
+    if (mmApiKey && shouldSync) {
+      lastMmSync = now
       try {
+        // Use StartDate to filter at API level (reduces data transfer)
         const mmResponse = await fetch(
-          `https://app.managedmissions.com/API/ContributionAPI/List?MissionTripId=${config.tripId}`,
+          `https://app.managedmissions.com/API/ContributionAPI/List?MissionTripId=${config.tripId}&StartDate=${config.eventDate}`,
           {
             headers: {
               'Authorization': `Bearer ${mmApiKey}`,
@@ -3935,7 +3943,13 @@ app.get('/api/fundraiser/donations', async (req, res) => {
           const mmData = await mmResponse.json()
           const contributions = mmData.data || []
 
-          // Sync MM donations to Supabase (filter by event date and general fund only)
+          // Batch fetch existing donations to avoid N+1 queries
+          const existingDonations = await getDonations(config.eventDate)
+          const existingByMmId = new Map(
+            existingDonations.filter(d => d.mm_id).map(d => [d.mm_id, d])
+          )
+
+          // Sync MM donations to Supabase (filter by general fund only)
           for (const contrib of contributions) {
             // Skip deleted donations
             if (contrib.Deleted) {
@@ -3952,13 +3966,8 @@ app.get('/api/fundraiser/donations', async (req, res) => {
               continue
             }
 
-            // Filter by event date
-            const createdDate = parseMmDate(contrib.CreatedDate)
-            if (!isEventDate(createdDate, config.eventDate)) {
-              continue // Skip donations not on event date
-            }
-
             const mmId = String(contrib.Id)
+            const createdDate = parseMmDate(contrib.CreatedDate)
 
             // Get notes - check both Notes and Comments fields
             const mmNotes = contrib.Notes || contrib.Comments || null
@@ -3972,8 +3981,8 @@ app.get('/api/fundraiser/donations', async (req, res) => {
             const firstName = nameParts[0] || ''
             const lastName = nameParts.slice(1).join(' ') || ''
 
-            // Check if donation exists - preserve source and table_number if already set
-            const existing = await getDonationByMmId(mmId)
+            // Check if donation exists using batched lookup (O(1) instead of DB call)
+            const existing = existingByMmId.get(mmId)
 
             // Skip if donation has been deleted locally
             if (existing?.deleted_at) {
@@ -4006,37 +4015,30 @@ app.get('/api/fundraiser/donations', async (req, res) => {
               notes: mmNotes
             })
 
-            // If table was auto-assigned and Reference isn't already TRIVIA, update MM
+            // If table was auto-assigned and Reference isn't already TRIVIA, update MM (fire and forget)
             if (finalTableNumber && contrib.ReferenceNumber !== 'TRIVIA') {
-              try {
-                const depositDate = createdDate
-                  ? createdDate.toISOString().split('T')[0]
-                  : new Date().toISOString().split('T')[0]
+              const depositDate = createdDate
+                ? createdDate.toISOString().split('T')[0]
+                : new Date().toISOString().split('T')[0]
 
-                const updateResponse = await fetch(
-                  'https://app.managedmissions.com/API/ContributionAPI/Update',
-                  {
-                    method: 'POST',
-                    headers: {
-                      'Authorization': `Bearer ${mmApiKey}`,
-                      'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                      GetById: parseInt(mmId, 10),
-                      MissionTripId: parseInt(config.tripId, 10),
-                      ContributionAmount: parseFloat(contrib.ContributionAmount) || 0,
-                      ReferenceNumber: 'TRIVIA',
-                      DepositDate: depositDate
-                    })
-                  }
-                )
-                if (!updateResponse.ok) {
-                  const updateText = await updateResponse.text()
-                  console.error('[Fundraiser] MM auto-update error:', updateResponse.status, updateText)
+              // Don't await - run in background to avoid blocking
+              fetch(
+                'https://app.managedmissions.com/API/ContributionAPI/Update',
+                {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${mmApiKey}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    GetById: parseInt(mmId, 10),
+                    MissionTripId: parseInt(config.tripId, 10),
+                    ContributionAmount: parseFloat(contrib.ContributionAmount) || 0,
+                    ReferenceNumber: 'TRIVIA',
+                    DepositDate: depositDate
+                  })
                 }
-              } catch (updateErr) {
-                console.error('[Fundraiser] MM auto-update error:', updateErr)
-              }
+              ).catch(err => console.error('[Fundraiser] MM auto-update error:', err))
             }
           }
         } else {
