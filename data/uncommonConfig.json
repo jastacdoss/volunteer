@@ -1,0 +1,22 @@
+{
+  "pin": "1234",
+  "adminPin": "7682",
+  "pcoEventId": "955563",
+  "pcoEventPeriodId": "43767237",
+  "eventDate": "2026-03-15",
+  "refreshInterval": 5000,
+  "drawingPollInterval": 2500,
+  "balancePollInterval": 10000,
+  "marksForCompletion": 10,
+  "completionBonus": 5,
+  "drawingWinnerCount": 5,
+  "redMarkPoints": 2,
+  "teams": [
+    { "name": "RED", "color": "#EF4444" },
+    { "name": "GREEN", "color": "#22C55E" },
+    { "name": "BLUE", "color": "#3B82F6" },
+    { "name": "YELLOW", "color": "#EAB308" },
+    { "name": "ORANGE", "color": "#F97316" },
+    { "name": "GREY", "color": "#6B7280" }
+  ]
+}

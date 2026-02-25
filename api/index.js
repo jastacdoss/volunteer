@@ -20,6 +20,35 @@ import {
   incrementFreeAnswer,
   decrementFreeAnswer
 } from './lib/supabase.js'
+import {
+  getTeams,
+  getTeamScores,
+  updateTeamLeader,
+  addTeamPoints,
+  getTeamPointsLog,
+  getSmallGroups,
+  getSmallGroupCounts,
+  updateSmallGroupLeader,
+  getParticipants,
+  searchParticipants,
+  getAllParticipants,
+  getParticipantById,
+  getParticipantByCheckinId,
+  upsertParticipant,
+  batchUpsertParticipants,
+  getManCard,
+  createManCard,
+  updateManCard,
+  ensureManCard,
+  getDrawingPool,
+  getDrawingWinners,
+  getLatestDrawingWinner,
+  createDrawing,
+  getTeamByLocationName,
+  getSmallGroupByName,
+  getParticipantsBySmallGroup,
+  getParticipantsByGroupType
+} from './lib/uncommon-supabase.js'
 import { REFERENCES_FORM_FIELDS } from './config/form-field-ids.js'
 
 // Get __dirname equivalent for ES modules
@@ -5179,6 +5208,505 @@ app.post('/api/fundraiser/device-code', async (req, res) => {
     res.status(500).json({ error: 'Failed to create device code' })
   }
 })
+
+// ========================================
+// Uncommon Men's Conference API
+// ========================================
+
+function getUncommonConfig() {
+  try {
+    const configPath = join(__dirname, '../data/uncommonConfig.json')
+    return JSON.parse(readFileSync(configPath, 'utf-8'))
+  } catch (err) {
+    console.error('[Uncommon] Error loading config:', err)
+    return {
+      pin: '1234',
+      adminPin: '7682',
+      pcoEventPeriodId: '43767237',
+      refreshInterval: 5000,
+      marksForCompletion: 12,
+      completionBonus: 5
+    }
+  }
+}
+
+// PCO sync cache
+let lastUncommonSync = 0
+const UNCOMMON_SYNC_INTERVAL = 30000 // 30 seconds
+
+// PIN verification
+app.post('/api/uncommon/verify-pin', (req, res) => {
+  try {
+    const { pin } = req.body
+    const config = getUncommonConfig()
+
+    if (pin === config.adminPin) {
+      res.json({ valid: true, isAdmin: true })
+    } else if (pin === config.pin) {
+      res.json({ valid: true, isAdmin: false })
+    } else {
+      res.status(401).json({ valid: false, error: 'Invalid PIN' })
+    }
+  } catch (err) {
+    console.error('[Uncommon] PIN verification error:', err)
+    res.status(500).json({ error: 'Failed to verify PIN' })
+  }
+})
+
+// Get team scores (public)
+app.get('/api/uncommon/scores', async (req, res) => {
+  try {
+    const now = Date.now()
+    const shouldSync = now - lastUncommonSync > UNCOMMON_SYNC_INTERVAL
+
+    // Sync from PCO in background if needed
+    if (shouldSync) {
+      lastUncommonSync = now
+      syncUncommonCheckins().catch(err => console.error('[Uncommon] Background sync error:', err))
+    }
+
+    const scores = await getTeamScores()
+    res.json({
+      scores,
+      lastSync: new Date(lastUncommonSync).toISOString()
+    })
+  } catch (err) {
+    console.error('[Uncommon] Get scores error:', err)
+    res.status(500).json({ error: 'Failed to get scores' })
+  }
+})
+
+// Get balance display data (public)
+app.get('/api/uncommon/balance', async (req, res) => {
+  try {
+    const now = Date.now()
+    const shouldSync = now - lastUncommonSync > UNCOMMON_SYNC_INTERVAL
+
+    // Sync from PCO in background if needed
+    if (shouldSync) {
+      lastUncommonSync = now
+      syncUncommonCheckins().catch(err => console.error('[Uncommon] Background sync error:', err))
+    }
+
+    const [teams, smallGroupCounts] = await Promise.all([
+      getTeamScores(),
+      getSmallGroupCounts()
+    ])
+
+    res.json({
+      teams,
+      smallGroups: smallGroupCounts,
+      lastSync: new Date(lastUncommonSync).toISOString()
+    })
+  } catch (err) {
+    console.error('[Uncommon] Get balance error:', err)
+    res.status(500).json({ error: 'Failed to get balance data' })
+  }
+})
+
+// Get latest drawing winners (public, for scoreboard animation)
+// Returns winners drawn in the last 30 seconds (a batch)
+app.get('/api/uncommon/drawing/latest', async (req, res) => {
+  try {
+    const config = getUncommonConfig()
+    const winnerCount = config.drawingWinnerCount || 5
+    const winners = await getDrawingWinners()
+
+    // Get the most recent winners drawn within 30 seconds of each other (a batch)
+    const recentWinners = []
+    if (winners.length > 0) {
+      const latestTime = new Date(winners[0].drawn_at).getTime()
+      for (const w of winners.slice(0, winnerCount)) {
+        const drawTime = new Date(w.drawn_at).getTime()
+        // If within 30 seconds of the latest, consider it part of the batch
+        if (latestTime - drawTime < 30000) {
+          recentWinners.push(w)
+        }
+      }
+    }
+
+    res.json({
+      winners: recentWinners,
+      latestDrawnAt: recentWinners[0]?.drawn_at || null
+    })
+  } catch (err) {
+    console.error('[Uncommon] Get latest winners error:', err)
+    res.status(500).json({ error: 'Failed to get latest winners' })
+  }
+})
+
+// Get/search participants
+app.get('/api/uncommon/participants', async (req, res) => {
+  try {
+    const { search, all } = req.query
+
+    // If all=true, return all participants
+    if (all === 'true') {
+      const participants = await getAllParticipants()
+      return res.json({ participants })
+    }
+
+    if (!search || search.trim().length < 1) {
+      return res.json({ participants: [] })
+    }
+
+    const participants = await searchParticipants(search)
+    res.json({ participants })
+  } catch (err) {
+    console.error('[Uncommon] Search participants error:', err)
+    res.status(500).json({ error: 'Failed to search participants' })
+  }
+})
+
+// Get participant by ID
+app.get('/api/uncommon/participants/:id', async (req, res) => {
+  try {
+    const participant = await getParticipantById(req.params.id)
+    if (!participant) {
+      return res.status(404).json({ error: 'Participant not found' })
+    }
+    res.json({ participant })
+  } catch (err) {
+    console.error('[Uncommon] Get participant error:', err)
+    res.status(500).json({ error: 'Failed to get participant' })
+  }
+})
+
+// Update man card marks
+app.patch('/api/uncommon/participants/:id/marks', async (req, res) => {
+  try {
+    const { black_marks, red_marks } = req.body
+    const participantId = req.params.id
+
+    // Ensure man card exists
+    await ensureManCard(participantId)
+
+    // Validate marks
+    const blackMarks = Math.max(0, Math.min(12, parseInt(black_marks, 10) || 0))
+    const redMarks = Math.max(0, Math.min(12, parseInt(red_marks, 10) || 0))
+
+    const manCard = await updateManCard(participantId, {
+      black_marks: blackMarks,
+      red_marks: redMarks
+    })
+
+    res.json({ manCard })
+  } catch (err) {
+    console.error('[Uncommon] Update marks error:', err)
+    res.status(500).json({ error: 'Failed to update marks' })
+  }
+})
+
+// Get participants by small group or group type (jh/hs)
+app.get('/api/uncommon/small-groups/:id/participants', async (req, res) => {
+  try {
+    const { id } = req.params
+    let participants
+
+    // Check if id is a group type (jh, hs) or a UUID
+    if (id === 'jh' || id === 'hs') {
+      participants = await getParticipantsByGroupType(id)
+    } else {
+      participants = await getParticipantsBySmallGroup(id)
+    }
+
+    res.json({ participants })
+  } catch (err) {
+    console.error('[Uncommon] Get small group participants error:', err)
+    res.status(500).json({ error: 'Failed to get participants' })
+  }
+})
+
+// Get all teams
+app.get('/api/uncommon/teams', async (req, res) => {
+  try {
+    const teams = await getTeamScores()
+    res.json({ teams })
+  } catch (err) {
+    console.error('[Uncommon] Get teams error:', err)
+    res.status(500).json({ error: 'Failed to get teams' })
+  }
+})
+
+// Add team bonus points
+app.post('/api/uncommon/teams/:id/points', async (req, res) => {
+  try {
+    const { points, reason, entered_by } = req.body
+    const teamId = req.params.id
+
+    if (!points || isNaN(parseInt(points, 10))) {
+      return res.status(400).json({ error: 'Points value required' })
+    }
+
+    const entry = await addTeamPoints(
+      teamId,
+      parseInt(points, 10),
+      reason || null,
+      entered_by || null
+    )
+
+    res.json({ entry })
+  } catch (err) {
+    console.error('[Uncommon] Add team points error:', err)
+    res.status(500).json({ error: 'Failed to add team points' })
+  }
+})
+
+// Get recent team points log
+app.get('/api/uncommon/teams/points-log', async (req, res) => {
+  try {
+    const log = await getTeamPointsLog()
+    res.json({ log })
+  } catch (err) {
+    console.error('[Uncommon] Get points log error:', err)
+    res.status(500).json({ error: 'Failed to get points log' })
+  }
+})
+
+// Get drawing pool
+app.get('/api/uncommon/drawing/pool', async (req, res) => {
+  try {
+    const pool = await getDrawingPool()
+    res.json({ pool })
+  } catch (err) {
+    console.error('[Uncommon] Get drawing pool error:', err)
+    res.status(500).json({ error: 'Failed to get drawing pool' })
+  }
+})
+
+// Draw winners (multiple)
+app.post('/api/uncommon/drawing/draw', async (req, res) => {
+  try {
+    const { prize_name, count } = req.body
+    const winnerCount = Math.max(1, Math.min(10, parseInt(count, 10) || 1))
+
+    // Get eligible pool
+    const pool = await getDrawingPool()
+    if (pool.length === 0) {
+      return res.status(400).json({ error: 'No eligible participants in drawing pool' })
+    }
+
+    // Random selection of multiple winners (without replacement)
+    const poolCopy = [...pool]
+    const winners = []
+    const actualCount = Math.min(winnerCount, poolCopy.length)
+
+    for (let i = 0; i < actualCount; i++) {
+      const randomIndex = Math.floor(Math.random() * poolCopy.length)
+      const winner = poolCopy.splice(randomIndex, 1)[0]
+      const drawing = await createDrawing(winner.participant_id, prize_name || null)
+      winners.push({ drawing, winner })
+    }
+
+    res.json({ winners, count: winners.length })
+  } catch (err) {
+    console.error('[Uncommon] Draw winners error:', err)
+    res.status(500).json({ error: 'Failed to draw winners' })
+  }
+})
+
+// Get drawing winners
+app.get('/api/uncommon/drawing/winners', async (req, res) => {
+  try {
+    const winners = await getDrawingWinners()
+    res.json({ winners })
+  } catch (err) {
+    console.error('[Uncommon] Get winners error:', err)
+    res.status(500).json({ error: 'Failed to get winners' })
+  }
+})
+
+// Manual sync from PCO
+app.post('/api/uncommon/sync', async (req, res) => {
+  try {
+    const result = await syncUncommonCheckins()
+    lastUncommonSync = Date.now()
+    res.json({ success: true, ...result })
+  } catch (err) {
+    console.error('[Uncommon] Manual sync error:', err)
+    res.status(500).json({ error: 'Failed to sync' })
+  }
+})
+
+// ========================================
+// Uncommon Admin Endpoints (Admin PIN)
+// ========================================
+
+// PCO People search
+app.get('/api/uncommon/search-pco', async (req, res) => {
+  try {
+    const { q } = req.query
+    if (!q || q.trim().length < 2) {
+      return res.json({ people: [] })
+    }
+
+    const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+    // Search PCO People with phone numbers included
+    const searchUrl = `https://api.planningcenteronline.com/people/v2/people?where[search_name_or_email_or_phone_number]=${encodeURIComponent(q)}&include=phone_numbers&per_page=10`
+
+    const response = await fetch(searchUrl, {
+      headers: { Authorization: `Basic ${credentials}` }
+    })
+
+    if (!response.ok) {
+      throw new Error(`PCO API error: ${response.status}`)
+    }
+
+    const data = await response.json()
+
+    // Build phone lookup from included data
+    const phonesByPersonId = {}
+    for (const item of (data.included || [])) {
+      if (item.type === 'PhoneNumber') {
+        const personId = item.relationships?.person?.data?.id
+        if (personId && item.attributes?.number) {
+          if (!phonesByPersonId[personId]) {
+            phonesByPersonId[personId] = item.attributes.number
+          }
+        }
+      }
+    }
+
+    const people = (data.data || []).map(p => ({
+      id: p.id,
+      name: p.attributes.name,
+      firstName: p.attributes.first_name,
+      lastName: p.attributes.last_name,
+      email: p.attributes.primary_contact_email || null,
+      phone: phonesByPersonId[p.id] || null
+    }))
+
+    res.json({ people })
+  } catch (err) {
+    console.error('[Uncommon] PCO search error:', err)
+    res.status(500).json({ error: 'Failed to search PCO' })
+  }
+})
+
+// Get all small groups
+app.get('/api/uncommon/small-groups', async (req, res) => {
+  try {
+    const groups = await getSmallGroups()
+    res.json({ groups })
+  } catch (err) {
+    console.error('[Uncommon] Get small groups error:', err)
+    res.status(500).json({ error: 'Failed to get small groups' })
+  }
+})
+
+// Update team leader
+app.patch('/api/uncommon/teams/:id/leader', async (req, res) => {
+  try {
+    const { pco_id, name, email } = req.body
+    const teamId = req.params.id
+
+    const team = await updateTeamLeader(teamId, {
+      pcoId: pco_id,
+      name,
+      email
+    })
+
+    res.json({ team })
+  } catch (err) {
+    console.error('[Uncommon] Update team leader error:', err)
+    res.status(500).json({ error: 'Failed to update team leader' })
+  }
+})
+
+// Update small group leader
+app.patch('/api/uncommon/small-groups/:id/leader', async (req, res) => {
+  try {
+    const { pco_id, name, email } = req.body
+    const groupId = req.params.id
+
+    const group = await updateSmallGroupLeader(groupId, {
+      pcoId: pco_id,
+      name,
+      email
+    })
+
+    res.json({ group })
+  } catch (err) {
+    console.error('[Uncommon] Update small group leader error:', err)
+    res.status(500).json({ error: 'Failed to update small group leader' })
+  }
+})
+
+// ========================================
+// Uncommon PCO Sync Helper
+// ========================================
+
+async function syncUncommonCheckins() {
+  const config = getUncommonConfig()
+  const credentials = Buffer.from(`${process.env.PCO_APP_ID}:${process.env.PCO_SECRET}`).toString('base64')
+
+  console.log('[Uncommon] Starting PCO sync...')
+
+  // Fetch all check-ins for the event
+  let allCheckins = []
+  let nextUrl = `https://api.planningcenteronline.com/check-ins/v2/events/${config.pcoEventId}/check_ins?include=person,locations&per_page=100`
+
+  while (nextUrl) {
+    const response = await fetch(nextUrl, {
+      headers: { Authorization: `Basic ${credentials}` }
+    })
+
+    if (!response.ok) {
+      throw new Error(`PCO API error: ${response.status}`)
+    }
+
+    const data = await response.json()
+    allCheckins = allCheckins.concat(data.data || [])
+
+    // Build included lookup
+    const includedMap = new Map()
+    for (const item of (data.included || [])) {
+      includedMap.set(`${item.type}-${item.id}`, item)
+    }
+
+    // Process this batch
+    for (const checkin of (data.data || [])) {
+      // Get person
+      const personRel = checkin.relationships?.person?.data
+      const person = personRel ? includedMap.get(`Person-${personRel.id}`) : null
+
+      // Get locations
+      const locationRels = checkin.relationships?.locations?.data || []
+      const locations = locationRels.map(rel => includedMap.get(`Location-${rel.id}`)).filter(Boolean)
+      const locationName = locations[0]?.attributes?.name || null
+
+      if (!person) continue
+
+      // Derive team from location name
+      const team = await getTeamByLocationName(locationName)
+      const smallGroup = await getSmallGroupByName(locationName)
+
+      // Upsert participant
+      const participant = await upsertParticipant({
+        pco_person_id: person.id,
+        pco_checkin_id: checkin.id,
+        checkin_number: checkin.attributes.number,
+        first_name: person.attributes.first_name || '',
+        last_name: person.attributes.last_name || '',
+        location_name: locationName,
+        team_id: team?.id || null,
+        small_group_id: smallGroup?.id || null,
+        checked_in_at: checkin.attributes.created_at
+      })
+
+      // Ensure man card exists
+      if (participant) {
+        await ensureManCard(participant.id)
+      }
+    }
+
+    nextUrl = data.links?.next || null
+  }
+
+  console.log(`[Uncommon] Synced ${allCheckins.length} check-ins`)
+  return { synced: allCheckins.length }
+}
 
 // Export for Vercel serverless functions
 export default app

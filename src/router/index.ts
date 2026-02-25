@@ -11,6 +11,11 @@ import FindYourFitView from '../views/FindYourFitView.vue'
 import ResourcesView from '../views/ResourcesView.vue'
 import EventCheckinsView from '../views/EventCheckinsView.vue'
 import FundraiserView from '../views/FundraiserView.vue'
+import UncommonScoreboardView from '../views/uncommon/UncommonScoreboardView.vue'
+import UncommonBalanceView from '../views/uncommon/UncommonBalanceView.vue'
+import UncommonPointsView from '../views/uncommon/UncommonPointsView.vue'
+import UncommonDrawingView from '../views/uncommon/UncommonDrawingView.vue'
+import UncommonLeadersView from '../views/uncommon/UncommonLeadersView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -78,6 +83,37 @@ const router = createRouter({
       path: '/fundraiser',
       name: 'fundraiser',
       component: FundraiserView,
+      meta: { public: true },
+    },
+    // Uncommon Men's Conference
+    {
+      path: '/uncommon/scoreboard',
+      name: 'uncommon-scoreboard',
+      component: UncommonScoreboardView,
+      meta: { public: true },
+    },
+    {
+      path: '/uncommon/balance',
+      name: 'uncommon-balance',
+      component: UncommonBalanceView,
+      meta: { public: true },
+    },
+    {
+      path: '/uncommon/points',
+      name: 'uncommon-points',
+      component: UncommonPointsView,
+      meta: { public: true },
+    },
+    {
+      path: '/uncommon/drawing',
+      name: 'uncommon-drawing',
+      component: UncommonDrawingView,
+      meta: { public: true },
+    },
+    {
+      path: '/uncommon/leaders',
+      name: 'uncommon-leaders',
+      component: UncommonLeadersView,
       meta: { public: true },
     },
   ],
