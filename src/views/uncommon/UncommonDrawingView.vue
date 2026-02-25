@@ -128,6 +128,27 @@ function formatTime(dateString: string) {
   })
 }
 
+async function deleteWinner(winnerId: string) {
+  if (!confirm('Delete this winner?')) return
+
+  try {
+    const response = await fetch(`/api/uncommon/drawing/${winnerId}`, {
+      method: 'DELETE',
+      headers: { 'x-uncommon-pin': pin.value }
+    })
+
+    if (!response.ok) throw new Error('Delete failed')
+
+    successMessage.value = 'Winner deleted'
+    setTimeout(() => successMessage.value = '', 2000)
+    fetchData()
+
+  } catch (e) {
+    error.value = 'Failed to delete winner'
+    setTimeout(() => error.value = '', 3000)
+  }
+}
+
 onMounted(() => {
   // Component mounted
 })
@@ -253,7 +274,7 @@ onMounted(() => {
             <div
               v-for="winner in winners"
               :key="winner.id"
-              class="flex justify-between items-center p-3 bg-gray-700 rounded-lg"
+              class="flex justify-between items-center p-3 bg-gray-700 rounded-lg group"
             >
               <div class="flex items-center gap-3">
                 <div
@@ -270,8 +291,17 @@ onMounted(() => {
                   </div>
                 </div>
               </div>
-              <div class="text-sm text-gray-400">
-                {{ formatTime(winner.drawn_at) }}
+              <div class="flex items-center gap-3">
+                <div class="text-sm text-gray-400">
+                  {{ formatTime(winner.drawn_at) }}
+                </div>
+                <button
+                  @click="deleteWinner(winner.id)"
+                  class="text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="Delete winner"
+                >
+                  ✕
+                </button>
               </div>
             </div>
           </div>

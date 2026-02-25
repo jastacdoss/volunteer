@@ -366,6 +366,17 @@ export async function createDrawing(participantId, prizeName = null) {
   return data
 }
 
+export async function deleteDrawing(drawingId) {
+  const client = getSupabase()
+  const { error } = await client
+    .from('drawings')
+    .delete()
+    .eq('id', drawingId)
+
+  if (error) throw error
+  return true
+}
+
 // ========================================
 // Utility - Get team by location name
 // ========================================

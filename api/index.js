@@ -44,6 +44,7 @@ import {
   getDrawingWinners,
   getLatestDrawingWinner,
   createDrawing,
+  deleteDrawing,
   getTeamByLocationName,
   getSmallGroupByName,
   getParticipantsBySmallGroup,
@@ -5513,6 +5514,17 @@ app.get('/api/uncommon/drawing/winners', async (req, res) => {
   } catch (err) {
     console.error('[Uncommon] Get winners error:', err)
     res.status(500).json({ error: 'Failed to get winners' })
+  }
+})
+
+// Delete a drawing winner
+app.delete('/api/uncommon/drawing/:id', async (req, res) => {
+  try {
+    await deleteDrawing(req.params.id)
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[Uncommon] Delete drawing error:', err)
+    res.status(500).json({ error: 'Failed to delete drawing' })
   }
 })
 
