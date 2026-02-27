@@ -62,6 +62,16 @@ const hsTotal = computed(() =>
   groupCounts.value.filter(g => g.group_type === 'hs').reduce((sum, g) => sum + g.participant_count, 0)
 )
 
+// Youth leaders (all JH groups share one leader, all HS groups share one leader)
+const jhLeader = computed(() => {
+  const group = groupCounts.value.find(g => g.group_type === 'jh' && g.leader_name)
+  return group?.leader_name || null
+})
+const hsLeader = computed(() => {
+  const group = groupCounts.value.find(g => g.group_type === 'hs' && g.leader_name)
+  return group?.leader_name || null
+})
+
 async function fetchBalance() {
   try {
     const response = await fetch('/api/uncommon/balance')
@@ -220,7 +230,7 @@ onUnmounted(() => {
               <td class="px-3 py-0.5">
                 <span class="font-semibold text-purple-600">Jr High (all)</span>
               </td>
-              <td class="px-3 py-0.5 text-gray-600">—</td>
+              <td class="px-3 py-0.5 text-gray-600">{{ jhLeader || '—' }}</td>
               <td class="px-3 py-0.5 text-right font-mono">{{ jhTotal }}</td>
             </tr>
             <tr
@@ -230,7 +240,7 @@ onUnmounted(() => {
               <td class="px-3 py-0.5">
                 <span class="font-semibold text-purple-600">High School (all)</span>
               </td>
-              <td class="px-3 py-0.5 text-gray-600">—</td>
+              <td class="px-3 py-0.5 text-gray-600">{{ hsLeader || '—' }}</td>
               <td class="px-3 py-0.5 text-right font-mono">{{ hsTotal }}</td>
             </tr>
           </tbody>
